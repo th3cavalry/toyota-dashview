@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include "driver/twai.h"
 #include <LovyanGFX.hpp>
+#include "version.h"
 #include "toyota_splash.h"
 
 // =========================================================================
@@ -1077,40 +1078,47 @@ void renderSystem() {
     char buf[64];
     canvas.setFont(&fonts::Font2);
 
+    // Firmware Version (SemVer)
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("Firmware Ver:", 24, 44);
+    snprintf(buf, sizeof(buf), "%s (%s)", APP_VERSION_STR, APP_BUILD_DATE);
+    canvas.setTextColor(C_TRD_ORANGE);
+    canvas.drawString(buf, 136, 44);
+
     // MCU
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("MCU Platform:", 24, 46);
+    canvas.drawString("MCU Platform:", 24, 70);
     snprintf(buf, sizeof(buf), "ESP32-S3 @ %d MHz", getCpuFrequencyMhz());
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString(buf, 136, 46);
+    canvas.drawString(buf, 136, 70);
 
     // Flash & PSRAM
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Flash & RAM:", 24, 74);
+    canvas.drawString("Flash & RAM:", 24, 96);
     snprintf(buf, sizeof(buf), "16MB Flash | %dMB PSRAM", ESP.getPsramSize() / (1024 * 1024));
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString(buf, 136, 74);
+    canvas.drawString(buf, 136, 96);
 
     // Free Heap
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Free Heap:", 24, 102);
+    canvas.drawString("Free Heap:", 24, 122);
     snprintf(buf, sizeof(buf), "%u KB (Healthy)", ESP.getFreeHeap() / 1024);
     canvas.setTextColor(C_GREEN_OK);
-    canvas.drawString(buf, 136, 102);
+    canvas.drawString(buf, 136, 122);
 
     // MicroSD
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("MicroSD Card:", 24, 130);
+    canvas.drawString("MicroSD Card:", 24, 148);
     snprintf(buf, sizeof(buf), "%s (%s)", sdMounted ? "Mounted FAT32" : "Unmounted", (currentLogMode != LOG_IDLE) ? "LOGGING" : "READY");
     canvas.setTextColor(sdMounted ? C_GREEN_OK : C_TRD_RED);
-    canvas.drawString(buf, 136, 130);
+    canvas.drawString(buf, 136, 148);
 
     // CAN Interface
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("CAN Interface:", 24, 158);
+    canvas.drawString("CAN Interface:", 24, 174);
     snprintf(buf, sizeof(buf), "IO%d/IO%d (500k HS-CAN)", CAN_TX_PIN, CAN_RX_PIN);
     canvas.setTextColor(C_TEXT_CYAN);
-    canvas.drawString(buf, 136, 158);
+    canvas.drawString(buf, 136, 174);
 
     drawBottomNavBar();
 }
@@ -1368,7 +1376,7 @@ void processDatalogging() {
 void setup() {
     Serial.begin(115200);
     delay(200);
-    Serial.println("\n=== Toyota DashView v0.0.1 (ESP32-S3 Touch 2.8 V2) ===");
+    Serial.printf("\n=== %s %s (ESP32-S3 Touch 2.8 V2) ===\n", APP_NAME, APP_VERSION_STR);
 
     // 1. Initialize Display & Backlight
     tft.init();
