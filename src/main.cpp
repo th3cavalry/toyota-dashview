@@ -3,10 +3,16 @@
 #include <SD.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <Preferences.h>
 #include "driver/twai.h"
 #include <LovyanGFX.hpp>
 #include "version.h"
 #include "toyota_splash.h"
+
+// Persistent Settings (Flash NVS)
+Preferences preferences;
+bool isDisplayFlipped = false; // Persistent: false = 0 deg (Rot 1), true = 180 deg (Rot 3)
+uint8_t userBrightness = 255;  // 0 - 255 PWM Backlight level
 
 // =========================================================================
 // Waveshare ESP32-S3-Touch-LCD-2.8 V2 Hardware Configuration
@@ -174,14 +180,15 @@ float currentPPS = 0;
 unsigned long lastPPSCheck = 0;
 unsigned long lastDisplayUpdate = 0;
 
-// 5 Dedicated Full-Color UI Screens
+// 6 Dedicated Full-Color UI Screens
 enum DisplayScreen {
     SCREEN_DASHBOARD = 0,
     SCREEN_SNIFFER   = 1,
     SCREEN_LOGGER    = 2, // Dedicated Datalog & CAN Logger Control Page
     SCREEN_WIFI      = 3,
     SCREEN_SYSTEM    = 4,
-    SCREEN_COUNT     = 5
+    SCREEN_SETTINGS  = 5, // Settings & 180-deg Display Flip Page
+    SCREEN_COUNT     = 6
 };
 DisplayScreen currentScreen = SCREEN_DASHBOARD;
 
@@ -563,17 +570,47 @@ void wakeScreen() {
     lastUserActivityTime = millis();
     if (isScreenDimmed) {
         isScreenDimmed = false;
-        tft.setBrightness(255);
-        Serial.println("[DISPLAY] Screen Brightness Restored to 100%.");
+        tft.setBrightness(userBrightness);
+        Serial.println("[DISPLAY] Screen Brightness Restored.");
     }
 }
 
 void dimScreen() {
     if (!isScreenDimmed) {
         isScreenDimmed = true;
-        tft.setBrightness(35);
-        Serial.println("[DISPLAY] Screen Dimmed to 15% (1 min timeout).");
+        tft.setBrightness(30);
+        Serial.println("[DISPLAY] Screen Dimmed to standby (1 min timeout).");
     }
+}
+
+// =========================================================================
+// Settings Persistence (NVS Flash)
+// =========================================================================
+void loadSettings() {
+    preferences.begin("dashview", true);
+    isDisplayFlipped = preferences.getBool("flip180", false);
+    userBrightness   = preferences.getUChar("bright", 255);
+    preferences.end();
+    Serial.printf("[SETTINGS] Loaded: Orientation=%s, Brightness=%d\n", 
+                  isDisplayFlipped ? "180-DEG FLIPPED" : "NORMAL", userBrightness);
+}
+
+void saveDisplayFlipSetting(bool flip) {
+    isDisplayFlipped = flip;
+    preferences.begin("dashview", false);
+    preferences.putBool("flip180", isDisplayFlipped);
+    preferences.end();
+    tft.setRotation(isDisplayFlipped ? 3 : 1);
+    Serial.printf("[SETTINGS] Display Orientation changed to: %s\n", isDisplayFlipped ? "FLIPPED 180 (Rot 3)" : "NORMAL (Rot 1)");
+}
+
+void saveBrightnessSetting(uint8_t br) {
+    userBrightness = br;
+    preferences.begin("dashview", false);
+    preferences.putUChar("bright", userBrightness);
+    preferences.end();
+    tft.setBrightness(userBrightness);
+    Serial.printf("[SETTINGS] Brightness set to: %d\n", userBrightness);
 }
 
 // =========================================================================
@@ -617,8 +654,14 @@ bool pollCst3530Touch(int &screenX, int &screenY) {
     uint16_t rawX = ((uint16_t)(buf[7] & 0x0F) << 8) | buf[4];
     uint16_t rawY = ((uint16_t)(buf[7] & 0xF0) << 4) | buf[5];
 
-    screenX = rawY;
-    screenY = 240 - rawX;
+    // Transform touch coordinates based on 180-deg orientation flip
+    if (isDisplayFlipped) {
+        screenX = 320 - rawY;
+        screenY = rawX;
+    } else {
+        screenX = rawY;
+        screenY = 240 - rawX;
+    }
 
     if (screenX < 0) screenX = 0;
     if (screenX > 320) screenX = 320;
@@ -1123,6 +1166,78 @@ void renderSystem() {
     drawBottomNavBar();
 }
 
+// Page 5: Settings & Display Configuration
+void renderSettings() {
+    drawHeaderBar("TOYOTA DASHVIEW - SETTINGS");
+
+    char buf[64];
+
+    // Card 1: Display Orientation (180-deg Flip)
+    // Box: x=12, y=28, w=296, h=52
+    canvas.fillRoundRect(12, 28, 296, 52, 6, C_CARD_BG);
+    canvas.drawRoundRect(12, 28, 296, 52, 6, C_CARD_BORDER);
+    canvas.fillRect(14, 28, 4, 52, C_TRD_RED);
+
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.drawString("Display Orientation (180 deg Flip)", 26, 32);
+
+    uint16_t flipBtnBg = isDisplayFlipped ? C_TRD_RED : canvas.color565(25, 35, 50);
+    uint16_t flipBtnBorder = isDisplayFlipped ? canvas.color565(255, 100, 100) : canvas.color565(60, 100, 160);
+    canvas.fillRoundRect(26, 52, 268, 22, 4, flipBtnBg);
+    canvas.drawRoundRect(26, 52, 268, 22, 4, flipBtnBorder);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.setFont(&fonts::Font2);
+    snprintf(buf, sizeof(buf), "MODE: %s (TAP TO FLIP)", isDisplayFlipped ? "FLIPPED 180 (INVERTED)" : "STANDARD 0 (NORMAL)");
+    canvas.drawCenterString(buf, 160, 55);
+
+    // Card 2: Backlight Brightness
+    // Box: x=12, y=86, w=296, h=56
+    canvas.fillRoundRect(12, 86, 296, 56, 6, C_CARD_BG);
+    canvas.drawRoundRect(12, 86, 296, 56, 6, C_CARD_BORDER);
+    canvas.fillRect(14, 86, 4, 56, C_TRD_ORANGE);
+
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_WHITE);
+    snprintf(buf, sizeof(buf), "Backlight Brightness (%d%%)", (int)((userBrightness * 100) / 255));
+    canvas.drawString(buf, 26, 90);
+
+    const uint8_t brLevels[4] = {64, 128, 192, 255};
+    const char* brLabels[4]   = {"25%", "50%", "75%", "100%"};
+    for (int i = 0; i < 4; i++) {
+        int bx = 26 + i * 68;
+        int by = 112;
+        bool isActive = (abs((int)userBrightness - (int)brLevels[i]) <= 32);
+        uint16_t bg = isActive ? C_TRD_ORANGE : C_CARD_INNER;
+        uint16_t border = isActive ? canvas.color565(255, 180, 50) : C_CARD_BORDER;
+        canvas.fillRoundRect(bx, by, 62, 24, 4, bg);
+        canvas.drawRoundRect(bx, by, 62, 24, 4, border);
+        canvas.setTextColor(isActive ? TFT_BLACK : C_TEXT_MUTED);
+        canvas.setFont(&fonts::Font2);
+        canvas.drawCenterString(brLabels[i], bx + 31, by + 4);
+    }
+
+    // Card 3: Reboot Controller
+    // Box: x=12, y=148, w=296, h=44
+    canvas.fillRoundRect(12, 148, 296, 44, 6, C_CARD_BG);
+    canvas.drawRoundRect(12, 148, 296, 44, 6, C_CARD_BORDER);
+    canvas.fillRect(14, 148, 4, 44, C_TRD_BURGUNDY);
+
+    canvas.fillRoundRect(26, 154, 268, 30, 4, canvas.color565(45, 18, 22));
+    canvas.drawRoundRect(26, 154, 268, 30, 4, C_TRD_BURGUNDY);
+    canvas.setTextColor(canvas.color565(255, 120, 120));
+    canvas.setFont(&fonts::Font2);
+    canvas.drawCenterString("REBOOT CONTROLLER", 160, 160);
+
+    // Status Footer
+    canvas.fillRoundRect(12, 198, 296, 18, 3, C_CARD_INNER);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawCenterString("Settings auto-saved to persistent flash storage", 160, 202);
+
+    drawBottomNavBar();
+}
+
 void updateDisplay() {
     canvas.fillScreen(C_DARK_BG);
 
@@ -1132,6 +1247,7 @@ void updateDisplay() {
         case SCREEN_LOGGER:    renderLoggerControl(); break;
         case SCREEN_WIFI:      renderWiFi();          break;
         case SCREEN_SYSTEM:    renderSystem();        break;
+        case SCREEN_SETTINGS:  renderSettings();      break;
         default:               renderDashboard();     break;
     }
 
@@ -1167,6 +1283,8 @@ void prevScreen() {
 // =========================================================================
 // Capacitive Touch & Gesture / Button Tap Engine
 // =========================================================================
+#define SWIPE_MIN_DIST_PX 160  // Must swipe at least half of the 320px screen width
+
 void handleTouch() {
     int touchX = 0, touchY = 0;
     bool touched = pollCst3530Touch(touchX, touchY);
@@ -1180,7 +1298,7 @@ void handleTouch() {
             touchLastX  = touchX;
             touchLastY  = touchY;
             touchStartTime = millis();
-            Serial.printf("[TOUCH V2] Press at (%d, %d)\n", touchX, touchY);
+            Serial.printf("[TOUCH] Press at (%d, %d)\n", touchX, touchY);
         } else {
             touchLastX = touchX;
             touchLastY = touchY;
@@ -1191,22 +1309,26 @@ void handleTouch() {
         int deltaY = touchLastY - touchStartY;
         unsigned long duration = millis() - touchStartTime;
 
-        Serial.printf("[TOUCH V2] Release at (%d, %d) | deltaX=%d, deltaY=%d, dur=%lums\n", 
+        Serial.printf("[TOUCH] Release at (%d, %d) | deltaX=%d, deltaY=%d, dur=%lums\n", 
                       touchLastX, touchLastY, deltaX, deltaY, duration);
 
-        // 1. Horizontal Swipe Gesture (Drag >= 20px)
-        if (abs(deltaX) >= 20 && duration < 1000 && !isPidConfigOpen) {
-            if (deltaX < -20) {
-                nextScreen(); // Drag right-to-left -> Next Page
-            } else if (deltaX > 20) {
-                prevScreen(); // Drag left-to-right -> Prev Page
+        // 1. Horizontal Swipe: MUST travel at least half the screen width (>= 160px)
+        if (abs(deltaX) >= SWIPE_MIN_DIST_PX && !isPidConfigOpen) {
+            if (deltaX <= -SWIPE_MIN_DIST_PX) {
+                nextScreen(); // Drag right-to-left >= 160px -> Next Page
+                Serial.printf("[SWIPE] Left swipe (%d px) -> Next Screen (%d)\n", deltaX, currentScreen);
+            } else if (deltaX >= SWIPE_MIN_DIST_PX) {
+                prevScreen(); // Drag left-to-right >= 160px -> Prev Page
+                Serial.printf("[SWIPE] Right swipe (%d px) -> Prev Screen (%d)\n", deltaX, currentScreen);
             }
-        } 
-        // 2. Button / Screen Tap Detection (duration < 500ms and minimal drag)
-        else if (duration < 500 && abs(deltaX) < 20 && abs(deltaY) < 20) {
+            return;
+        }
+
+        // 2. Stationary Button / Card Tap (Minimal movement < 30px, duration < 600ms)
+        // A regular touch NEVER changes screens!
+        if (abs(deltaX) < 30 && abs(deltaY) < 30 && duration < 600) {
             // A. PID Selector Modal Tap Handling
             if (currentScreen == SCREEN_LOGGER && isPidConfigOpen) {
-                // Check Grid Taps
                 int startY = 28;
                 int rowHeight = 28;
                 int colWidth = 144;
@@ -1225,17 +1347,13 @@ void handleTouch() {
                     }
                 }
 
-                // Check Bottom Buttons in PID Picker
                 int botY = 210;
                 if (touchLastY >= botY && touchLastY <= botY + 28) {
                     if (touchLastX >= 12 && touchLastX <= 77) {
-                        // [ ALL ]
                         for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = true;
                     } else if (touchLastX >= 85 && touchLastX <= 150) {
-                        // [ NONE ]
                         for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = false;
                     } else if (touchLastX >= 160 && touchLastX <= 310) {
-                        // [ SAVE & RETURN ]
                         isPidConfigOpen = false;
                     }
                     return;
@@ -1270,21 +1388,31 @@ void handleTouch() {
                     return;
                 }
             }
-
-            // Bottom Navigation Bar Tap
-            if (touchLastY >= 210 && !isPidConfigOpen) {
-                if (touchLastX > 160) {
-                    nextScreen();
-                } else {
-                    prevScreen();
+            // C. Page 5 (Settings Page)
+            else if (currentScreen == SCREEN_SETTINGS) {
+                // Card 1: 180-deg Display Flip (y: 28 - 80)
+                if (touchLastY >= 28 && touchLastY <= 80) {
+                    saveDisplayFlipSetting(!isDisplayFlipped);
+                    return;
                 }
-            } 
-            // General Screen Tap on other pages
-            else if (currentScreen != SCREEN_LOGGER) {
-                if (touchLastX > 160) {
-                    nextScreen();
-                } else {
-                    prevScreen();
+                // Card 2: Brightness Step Buttons (y: 106 - 140)
+                else if (touchLastY >= 106 && touchLastY <= 140) {
+                    const uint8_t brLevels[4] = {64, 128, 192, 255};
+                    for (int i = 0; i < 4; i++) {
+                        int bx = 26 + i * 68;
+                        if (touchLastX >= bx && touchLastX <= bx + 62) {
+                            saveBrightnessSetting(brLevels[i]);
+                            return;
+                        }
+                    }
+                    return;
+                }
+                // Card 3: Reboot Controller (y: 148 - 192)
+                else if (touchLastY >= 148 && touchLastY <= 192) {
+                    Serial.println("[SETTINGS] Reboot requested -> Restarting ESP32...");
+                    delay(200);
+                    ESP.restart();
+                    return;
                 }
             }
         }
@@ -1378,10 +1506,13 @@ void setup() {
     delay(200);
     Serial.printf("\n=== %s %s (ESP32-S3 Touch 2.8 V2) ===\n", APP_NAME, APP_VERSION_STR);
 
+    // 0. Load persistent settings (180-deg flip & brightness)
+    loadSettings();
+
     // 1. Initialize Display & Backlight
     tft.init();
-    tft.setRotation(1); // Landscape 320x240
-    tft.setBrightness(255);
+    tft.setRotation(isDisplayFlipped ? 3 : 1); // Landscape Normal (1) or Inverted (3)
+    tft.setBrightness(userBrightness);
 
     // Create 320x240 Canvas Sprite
     canvas.setColorDepth(16);
@@ -1411,18 +1542,25 @@ void loop() {
         // 1. Check if screen tapped
         int touchX = 0, touchY = 0;
         if (pollCst3530Touch(touchX, touchY)) {
+            currentScreen = SCREEN_DASHBOARD; // ALWAYS enter Dashboard (Page 0)
             isBootSplashActive = false;
+            wasTouched = false;
             wakeScreen();
             lastUserActivityTime = millis();
-            Serial.println("[SPLASH] Screen tapped -> Exiting splash to Dashboard.");
+            Serial.println("[SPLASH] Screen tapped -> Exiting splash to Main Dashboard (Page 0).");
+            delay(120);
+            return;
         }
 
         // 2. Check if engine started (RPM > 0 or Speed > 0)
         if (vehicleData.rpm > 0 || vehicleData.speedMph > 0) {
+            currentScreen = SCREEN_DASHBOARD; // ALWAYS enter Dashboard (Page 0)
             isBootSplashActive = false;
+            wasTouched = false;
             wakeScreen();
             lastUserActivityTime = millis();
-            Serial.printf("[SPLASH] Engine started (RPM: %d) -> Exiting splash to Dashboard.\n", vehicleData.rpm);
+            Serial.printf("[SPLASH] Engine started (RPM: %d) -> Exiting splash to Main Dashboard (Page 0).\n", vehicleData.rpm);
+            return;
         }
 
         return;
