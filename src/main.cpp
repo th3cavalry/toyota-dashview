@@ -101,8 +101,8 @@ const uint8_t CST3530_END_READ_REG[4] = {0xD0, 0x00, 0x02, 0xAB};
 // =========================================================================
 // Wi-Fi Access Point & SavvyCAN Streaming Server
 // =========================================================================
-const char* WIFI_SSID = "Tacoma-CAN-Logger";
-const char* WIFI_PASS = "tacoma123";
+const char* WIFI_SSID = "Toyota-DashView";
+const char* WIFI_PASS = "dashview123";
 #define SAVVYCAN_PORT 23
 
 WiFiServer tcpServer(SAVVYCAN_PORT);
@@ -139,6 +139,7 @@ DatalogPid availablePids[] = {
 #define PID_COUNT (sizeof(availablePids) / sizeof(availablePids[0]))
 
 bool isPidConfigOpen = false; // Is the PID selection modal/view open
+bool isBootSplashActive = true; // Keep boot splash until screen tapped or engine starts (RPM > 0)
 
 // =========================================================================
 // Logging Engine & State Management (Mutually Exclusive)
@@ -674,7 +675,7 @@ void drawBottomNavBar() {
 
 // Page 0: Live Vehicle Cluster
 void renderDashboard() {
-    drawHeaderBar("TOYOTA TACOMA DASHBOARD");
+    drawHeaderBar("TOYOTA DASHVIEW - CLUSTER");
 
     int rpmY = 30;
     canvas.drawRoundRect(10, rpmY, 300, 16, 4, canvas.color565(60, 60, 75));
@@ -1045,12 +1046,12 @@ void updateDisplay() {
 }
 
 // =========================================================================
-// Official TRD Red Boot Splash
+// Official TRD Red Boot Splash (Native PNG Decoded)
 // =========================================================================
 void showToyotaBootSplash() {
-    canvas.pushImage(0, 0, 320, 240, toyota_splash_320x240);
+    canvas.drawPng(trd_splash_png, TRD_SPLASH_PNG_LEN, 0, 0);
     canvas.pushSprite(0, 0);
-    delay(2200);
+    isBootSplashActive = true;
 }
 
 // =========================================================================
@@ -1282,7 +1283,7 @@ void processDatalogging() {
 void setup() {
     Serial.begin(115200);
     delay(200);
-    Serial.println("\n=== Waveshare ESP32-S3-Touch-LCD-2.8 V2 Tacoma CAN Logger ===");
+    Serial.println("\n=== Toyota DashView v0.0.1 (ESP32-S3 Touch 2.8 V2) ===");
 
     // 1. Initialize Display & Backlight
     tft.init();
@@ -1310,6 +1311,30 @@ void setup() {
 }
 
 void loop() {
+    if (isBootSplashActive) {
+        handleWiFiClients();
+        processCAN();
+
+        // 1. Check if screen tapped
+        int touchX = 0, touchY = 0;
+        if (pollCst3530Touch(touchX, touchY)) {
+            isBootSplashActive = false;
+            wakeScreen();
+            lastUserActivityTime = millis();
+            Serial.println("[SPLASH] Screen tapped -> Exiting splash to Dashboard.");
+        }
+
+        // 2. Check if engine started (RPM > 0 or Speed > 0)
+        if (vehicleData.rpm > 0 || vehicleData.speedMph > 0) {
+            isBootSplashActive = false;
+            wakeScreen();
+            lastUserActivityTime = millis();
+            Serial.printf("[SPLASH] Engine started (RPM: %d) -> Exiting splash to Dashboard.\n", vehicleData.rpm);
+        }
+
+        return;
+    }
+
     handleTouch();
     handleWiFiClients();
     processCAN();

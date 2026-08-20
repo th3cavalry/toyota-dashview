@@ -1,6 +1,6 @@
-# Toyota Tacoma CAN Logger & SavvyCAN Wi-Fi Streamer 🚙📡
+# Toyota DashView 🚙📊
 
-An automotive CAN bus logger, live dashboard, and wireless SavvyCAN streamer designed for 3rd Gen Toyota Tacomas (2016–2023). Built on the **LILYGO T-Beam SUPREME ESP32-S3** with a **Waveshare SN65HVD230 3.3V CAN Transceiver**.
+**Toyota DashView** is an open-source, in-cabin automotive digital gauge cluster, high-speed PID datalogger, raw CAN bus analyzer, and wireless SavvyCAN streamer designed for 3rd Gen Toyota Tacomas (2016–2023) and Toyota CAN vehicles.
 
 Originally developed to reverse-engineer and map the factory Toyota 500 kbps CAN bus system for a **BMW M57 3.0L Twin-Turbo Diesel + ZF 6HP28 Transmission swap** using an **ESP32-CAN-X2** dual-channel translator gateway.
 
