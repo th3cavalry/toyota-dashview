@@ -96,7 +96,6 @@ const uint8_t CST3530_END_READ_REG[4] = {0xD0, 0x00, 0x02, 0xAB};
 
 // Screen Auto-Dim Timeout (60 Seconds)
 #define SCREEN_TIMEOUT_MS          60000 
-#define CAN_INACTIVITY_TIMEOUT_MS  10000 
 
 // =========================================================================
 // Wi-Fi Access Point & SavvyCAN Streaming Server
@@ -111,18 +110,28 @@ bool wifiClientConnected = false;
 unsigned long wifiStreamedCount = 0;
 
 // =========================================================================
-// Hardware Instances & State Variables
+// Logging Engine & State Management (Mutually Exclusive)
 // =========================================================================
+enum LoggingMode {
+    LOG_IDLE    = 0,
+    LOG_CANBUS  = 1, // Raw CAN frames (canbus_XXXX.csv)
+    LOG_DATALOG = 2  // Decoded PID parameters (datalog_XXXX.csv)
+};
+
+LoggingMode currentLogMode = LOG_IDLE;
+char currentLogFileName[40] = "None";
+unsigned long logStartTime = 0;
+unsigned long logEntryCount = 0;
+unsigned long lastLogFlushTime = 0;
+unsigned long lastDatalogSampleTime = 0;
+
+// Hardware & Runtime Instances
 SPIClass sdSPI(HSPI);
-File logFile;
+File activeLogFile;
 bool sdMounted = false;
-bool isLoggingActive = false;
-char currentLogFileName[36] = "None";
 unsigned long packetCount = 0;
-unsigned long tripPacketCount = 0;
 unsigned long lastCanActivityTime = 0;
 unsigned long lastSdRetryTime = 0;
-unsigned long lastLogFlushTime = 0;
 unsigned long lastObdQueryTime = 0;
 unsigned long lastUserActivityTime = 0;
 bool isScreenDimmed = false;
@@ -136,7 +145,7 @@ unsigned long lastDisplayUpdate = 0;
 enum DisplayScreen {
     SCREEN_DASHBOARD = 0,
     SCREEN_SNIFFER   = 1,
-    SCREEN_TELEMETRY = 2,
+    SCREEN_LOGGER    = 2, // New Dedicated Datalog & CAN Logger Control Page
     SCREEN_WIFI      = 3,
     SCREEN_SYSTEM    = 4,
     SCREEN_COUNT     = 5
@@ -163,6 +172,7 @@ struct TacomaTelemetry {
     float knockFB = 0.0f;       // Knock Feedback (deg)
     int throttlePct = 0;        // Throttle %
     int engineLoadPct = 0;      // Calculated Engine Load %
+    int coolantTempC = 88;      // Coolant Temp °C
 } vehicleData;
 
 // Ring buffer for CAN Sniffer View
@@ -277,19 +287,23 @@ void sendToyotaObdQueries() {
     if (obdQueryIndex == 0) {
         queryMsg.data[0] = 0x02;
         queryMsg.data[1] = 0x21;
-        queryMsg.data[2] = 0xA2; // KCLV & KnockFB
+        queryMsg.data[2] = 0xA2; // Mode 21 PID A2: KCLV & KnockFB
     } else if (obdQueryIndex == 1) {
         queryMsg.data[0] = 0x02;
         queryMsg.data[1] = 0x01;
-        queryMsg.data[2] = 0x24; // Actual A/F Sensor Lambda
+        queryMsg.data[2] = 0x24; // Mode 1 PID 24: Actual A/F Sensor Lambda
+    } else if (obdQueryIndex == 2) {
+        queryMsg.data[0] = 0x02;
+        queryMsg.data[1] = 0x01;
+        queryMsg.data[2] = 0x44; // Mode 1 PID 44: Commanded Equivalence Ratio
     } else {
         queryMsg.data[0] = 0x02;
         queryMsg.data[1] = 0x01;
-        queryMsg.data[2] = 0x44; // Commanded Equivalence Ratio Lambda
+        queryMsg.data[2] = 0x05; // Mode 1 PID 05: Engine Coolant Temp
     }
 
     twai_transmit(&queryMsg, 0);
-    obdQueryIndex = (obdQueryIndex + 1) % 3;
+    obdQueryIndex = (obdQueryIndex + 1) % 4;
 }
 
 void decodeTacomaFrame(const twai_message_t &msg) {
@@ -334,6 +348,9 @@ void decodeTacomaFrame(const twai_message_t &msg) {
             if (msg.data[2] == 0x04 && msg.data_length_code >= 4) {
                 vehicleData.engineLoadPct = (msg.data[3] * 100) / 255;
             }
+            else if (msg.data[2] == 0x05 && msg.data_length_code >= 4) {
+                vehicleData.coolantTempC = (int)msg.data[3] - 40;
+            }
             else if (msg.data[2] == 0x24 && msg.data_length_code >= 6) {
                 uint16_t rawLambda = (msg.data[3] << 8) | msg.data[4];
                 float lambda = (float)rawLambda / 32768.0f;
@@ -363,7 +380,7 @@ void recordSnifferFrame(const twai_message_t &msg) {
 }
 
 // =========================================================================
-// MicroSD Card Logging
+// MicroSD Card Setup & Non-Overwriting File Generator
 // =========================================================================
 bool mountSD() {
     sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
@@ -377,30 +394,89 @@ bool mountSD() {
     return false;
 }
 
-void startTripLogging() {
+// Find next available non-overwriting file: /prefix_0001.csv, /prefix_0002.csv ...
+String generateUniqueFileName(const char* prefix) {
     if (!sdMounted && !mountSD()) {
-        return;
+        return "";
     }
+    char filename[36];
+    for (int i = 1; i <= 9999; i++) {
+        snprintf(filename, sizeof(filename), "/%s_%04d.csv", prefix, i);
+        if (!SD.exists(filename)) {
+            return String(filename);
+        }
+    }
+    snprintf(filename, sizeof(filename), "/%s_%lu.csv", prefix, millis() / 1000);
+    return String(filename);
+}
 
-    snprintf(currentLogFileName, sizeof(currentLogFileName), "/tacoma_trip_%lu.csv", millis() / 1000);
-    logFile = SD.open(currentLogFileName, FILE_WRITE);
-    if (logFile) {
-        logFile.println("Timestamp_ms,CAN_ID,Ext,DLC,Data");
-        logFile.flush();
-        isLoggingActive = true;
-        tripPacketCount = 0;
-        lastLogFlushTime = millis();
-        Serial.printf("[SD] >>> Auto-Trip Started: %s\n", currentLogFileName);
+// =========================================================================
+// Start / Stop Functions for Mutually Exclusive Loggers
+// =========================================================================
+void stopActiveLogger() {
+    if (currentLogMode != LOG_IDLE && activeLogFile) {
+        activeLogFile.flush();
+        activeLogFile.close();
+        Serial.printf("[LOGGER] Stopped & Saved: %s (Entries: %lu)\n", currentLogFileName, logEntryCount);
+        currentLogMode = LOG_IDLE;
+        strcpy(currentLogFileName, "None");
+        logEntryCount = 0;
     }
 }
 
-void stopTripLogging() {
-    if (isLoggingActive && logFile) {
-        logFile.flush();
-        logFile.close();
-        isLoggingActive = false;
-        Serial.printf("[SD] <<< Auto-Trip Finalized: %s (Packets: %lu)\n", currentLogFileName, tripPacketCount);
+bool startCanbusLogger() {
+    if (currentLogMode != LOG_IDLE) {
+        Serial.println("[LOGGER] Cannot start CAN Logger: Another log session is active!");
+        return false;
     }
+
+    String path = generateUniqueFileName("canbus");
+    if (path.length() == 0) {
+        Serial.println("[LOGGER] Failed to create canbus file: SD card not available.");
+        return false;
+    }
+
+    activeLogFile = SD.open(path.c_str(), FILE_WRITE);
+    if (activeLogFile) {
+        activeLogFile.println("Timestamp_ms,CAN_ID,Ext,DLC,Data");
+        activeLogFile.flush();
+        currentLogMode = LOG_CANBUS;
+        strncpy(currentLogFileName, path.c_str(), sizeof(currentLogFileName));
+        logStartTime = millis();
+        logEntryCount = 0;
+        lastLogFlushTime = millis();
+        Serial.printf("[LOGGER] >>> Started CAN Logger: %s\n", currentLogFileName);
+        return true;
+    }
+    return false;
+}
+
+bool startDataLogger() {
+    if (currentLogMode != LOG_IDLE) {
+        Serial.println("[LOGGER] Cannot start Datalogger: Another log session is active!");
+        return false;
+    }
+
+    String path = generateUniqueFileName("datalog");
+    if (path.length() == 0) {
+        Serial.println("[LOGGER] Failed to create datalog file: SD card not available.");
+        return false;
+    }
+
+    activeLogFile = SD.open(path.c_str(), FILE_WRITE);
+    if (activeLogFile) {
+        activeLogFile.println("Timestamp_ms,RPM,Speed_MPH,Throttle_Pct,Engine_Load_Pct,Cmd_AFR,Act_AFR,Cmd_Lambda,Act_Lambda,KCLV,Knock_FB_deg,Coolant_C");
+        activeLogFile.flush();
+        currentLogMode = LOG_DATALOG;
+        strncpy(currentLogFileName, path.c_str(), sizeof(currentLogFileName));
+        logStartTime = millis();
+        logEntryCount = 0;
+        lastLogFlushTime = millis();
+        lastDatalogSampleTime = millis();
+        Serial.printf("[LOGGER] >>> Started PID Datalogger: %s\n", currentLogFileName);
+        return true;
+    }
+    return false;
 }
 
 // =========================================================================
@@ -424,7 +500,7 @@ void dimScreen() {
 }
 
 // =========================================================================
-// Native Waveshare V2 CST3530 Capacitive Touch Driver (32-bit Registers)
+// Native Waveshare V2 CST3530 Capacitive Touch Driver
 // =========================================================================
 void initCst3530Touch() {
     pinMode(TP_INT_PIN, INPUT_PULLUP);
@@ -439,14 +515,12 @@ void initCst3530Touch() {
 }
 
 bool pollCst3530Touch(int &screenX, int &screenY) {
-    // 1. Write 4-byte 32-bit register (0xD0070000) with repeated start
     Wire1.beginTransmission(CST3530_I2C_ADDR);
     Wire1.write(CST3530_DATA_REG, 4);
     if (Wire1.endTransmission(false) != 0) {
         return false;
     }
 
-    // 2. Read 9 bytes data packet
     if (Wire1.requestFrom((uint8_t)CST3530_I2C_ADDR, (uint8_t)9) != 9) {
         return false;
     }
@@ -454,22 +528,19 @@ bool pollCst3530Touch(int &screenX, int &screenY) {
     uint8_t buf[9];
     Wire1.readBytes(buf, 9);
 
-    // 3. Write 4-byte ACK / end-of-read register (0xD00002AB) to release IRQ
     Wire1.beginTransmission(CST3530_I2C_ADDR);
     Wire1.write(CST3530_END_READ_REG, 4);
     Wire1.endTransmission(true);
 
-    // 4. Validate touch condition: count > 0 AND high nibble of buf[8] != 0
     uint8_t count = buf[3] & 0x0F;
     if (count == 0 || (buf[8] & 0xF0) == 0x00) {
         return false;
     }
 
-    // 5. Decode 12-bit touch point coordinates
     uint16_t rawX = ((uint16_t)(buf[7] & 0x0F) << 8) | buf[4];
     uint16_t rawY = ((uint16_t)(buf[7] & 0xF0) << 4) | buf[5];
 
-    // 6. Map native 240x320 portrait to 320x240 landscape (Rotation 1)
+    // Map native 240x320 portrait to 320x240 landscape (Rotation 1)
     screenX = rawY;
     screenY = 240 - rawX;
 
@@ -495,10 +566,10 @@ void drawHeaderBar(const char* title) {
     char buf[32];
     snprintf(buf, sizeof(buf), "%.0f msg/s", currentPPS);
     canvas.setTextColor(canvas.color565(0, 220, 255), canvas.color565(18, 18, 24));
-    canvas.drawRightString(buf, 245, 4);
+    canvas.drawRightString(buf, 240, 4);
 
-    const char* sdTag = isLoggingActive ? "[REC]" : (sdMounted ? "SD:OK" : "NO SD");
-    uint16_t sdColor = isLoggingActive ? canvas.color565(255, 60, 60) : (sdMounted ? canvas.color565(80, 220, 80) : canvas.color565(120, 120, 120));
+    const char* sdTag = (currentLogMode == LOG_CANBUS) ? "[CAN REC]" : ((currentLogMode == LOG_DATALOG) ? "[PID REC]" : (sdMounted ? "SD:OK" : "NO SD"));
+    uint16_t sdColor = (currentLogMode != LOG_IDLE) ? canvas.color565(255, 60, 60) : (sdMounted ? canvas.color565(80, 220, 80) : canvas.color565(120, 120, 120));
     canvas.setTextColor(sdColor, canvas.color565(18, 18, 24));
     canvas.drawRightString(sdTag, 315, 4);
 
@@ -527,6 +598,7 @@ void drawBottomNavBar() {
     canvas.drawRightString("NEXT >", 310, 222);
 }
 
+// Page 0: Live Vehicle Cluster
 void renderDashboard() {
     drawHeaderBar("TOYOTA TACOMA DASHBOARD");
 
@@ -630,6 +702,7 @@ void renderDashboard() {
     drawBottomNavBar();
 }
 
+// Page 1: Live CAN Sniffer
 void renderSniffer() {
     char buf[64];
     snprintf(buf, sizeof(buf), "CAN SNIFFER (Total: %lu)", packetCount);
@@ -666,46 +739,91 @@ void renderSniffer() {
     drawBottomNavBar();
 }
 
-void renderTelemetry() {
-    drawHeaderBar("VEHICLE TELEMETRY & SPEED");
+// Page 2: Dedicated Datalog & CAN Logger Control Center (Interactive Touch Buttons)
+void renderLoggerControl() {
+    drawHeaderBar("DATALOG & CAN LOGGER CONTROL");
 
-    canvas.fillRoundRect(10, 36, 145, 165, 6, canvas.color565(25, 28, 38));
-    canvas.drawRoundRect(10, 36, 145, 165, 6, canvas.color565(60, 65, 85));
+    char buf[64];
+    unsigned long elapsedSec = (currentLogMode != LOG_IDLE) ? ((millis() - logStartTime) / 1000) : 0;
 
-    canvas.setTextColor(canvas.color565(140, 160, 190));
-    canvas.setFont(&fonts::Font2);
-    canvas.drawCenterString("VEHICLE SPEED", 82, 46);
+    // ==========================================
+    // BUTTON 1: CAN Bus Logger (canbus_XXXX.csv)
+    // Box: x=12, y=32, w=296, h=56
+    // ==========================================
+    bool isCanActive = (currentLogMode == LOG_CANBUS);
+    bool canDisabled = (currentLogMode == LOG_DATALOG); // Mutually exclusive locked
 
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%d", vehicleData.speedMph);
-    canvas.setFont(&fonts::Font8);
-    canvas.setTextColor(TFT_WHITE);
-    canvas.drawCenterString(buf, 82, 80);
+    uint16_t canBgColor = isCanActive ? canvas.color565(160, 20, 20) : (canDisabled ? canvas.color565(30, 32, 40) : canvas.color565(24, 70, 35));
+    uint16_t canBorderColor = isCanActive ? canvas.color565(255, 60, 60) : (canDisabled ? canvas.color565(60, 60, 70) : canvas.color565(60, 200, 80));
+
+    canvas.fillRoundRect(12, 32, 296, 56, 6, canBgColor);
+    canvas.drawRoundRect(12, 32, 296, 56, 6, canBorderColor);
 
     canvas.setFont(&fonts::Font4);
-    canvas.setTextColor(canvas.color565(0, 220, 255));
-    canvas.drawCenterString("MPH", 82, 155);
+    if (isCanActive) {
+        canvas.setTextColor(TFT_WHITE);
+        canvas.drawString("[STOP CAN LOGGER]", 22, 38);
+        canvas.setFont(&fonts::Font2);
+        snprintf(buf, sizeof(buf), "REC: %s (%lu frames, %lum%02lus)", currentLogFileName, logEntryCount, elapsedSec / 60, elapsedSec % 60);
+        canvas.setTextColor(canvas.color565(255, 200, 200));
+        canvas.drawString(buf, 22, 64);
+    } else {
+        canvas.setTextColor(canDisabled ? canvas.color565(100, 100, 120) : TFT_WHITE);
+        canvas.drawString("[START CAN LOG]", 22, 38);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(canDisabled ? canvas.color565(80, 80, 90) : canvas.color565(180, 240, 180));
+        canvas.drawString(canDisabled ? "Locked (Stop PID Datalogger first)" : "Logs all raw frames -> canbus_XXXX.csv", 22, 64);
+    }
 
-    canvas.fillRoundRect(165, 36, 145, 165, 6, canvas.color565(25, 28, 38));
-    canvas.drawRoundRect(165, 36, 145, 165, 6, canvas.color565(60, 65, 85));
+    // ==========================================
+    // BUTTON 2: PID Datalogger (datalog_XXXX.csv)
+    // Box: x=12, y=94, w=296, h=56
+    // ==========================================
+    bool isDatalogActive = (currentLogMode == LOG_DATALOG);
+    bool datalogDisabled = (currentLogMode == LOG_CANBUS); // Mutually exclusive locked
 
-    canvas.setTextColor(canvas.color565(255, 180, 0));
+    uint16_t dlBgColor = isDatalogActive ? canvas.color565(160, 80, 0) : (datalogDisabled ? canvas.color565(30, 32, 40) : canvas.color565(20, 50, 90));
+    uint16_t dlBorderColor = isDatalogActive ? canvas.color565(255, 160, 0) : (datalogDisabled ? canvas.color565(60, 60, 70) : canvas.color565(60, 140, 255));
+
+    canvas.fillRoundRect(12, 94, 296, 56, 6, dlBgColor);
+    canvas.drawRoundRect(12, 94, 296, 56, 6, dlBorderColor);
+
+    canvas.setFont(&fonts::Font4);
+    if (isDatalogActive) {
+        canvas.setTextColor(TFT_WHITE);
+        canvas.drawString("[STOP PID DATALOG]", 22, 100);
+        canvas.setFont(&fonts::Font2);
+        snprintf(buf, sizeof(buf), "REC: %s (%lu samples, %lum%02lus)", currentLogFileName, logEntryCount, elapsedSec / 60, elapsedSec % 60);
+        canvas.setTextColor(canvas.color565(255, 230, 180));
+        canvas.drawString(buf, 22, 126);
+    } else {
+        canvas.setTextColor(datalogDisabled ? canvas.color565(100, 100, 120) : TFT_WHITE);
+        canvas.drawString("[START PID DATALOG]", 22, 100);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(datalogDisabled ? canvas.color565(80, 80, 90) : canvas.color565(180, 220, 255));
+        canvas.drawString(datalogDisabled ? "Locked (Stop CAN Logger first)" : "Logs RPM, Speed, AFR, KCLV, Load, ECT", 22, 126);
+    }
+
+    // ==========================================
+    // Bottom Info & PID Summary Card
+    // Box: x=12, y=156, w=296, h=56
+    // ==========================================
+    canvas.fillRoundRect(12, 156, 296, 56, 6, canvas.color565(20, 22, 30));
+    canvas.drawRoundRect(12, 156, 296, 56, 6, canvas.color565(50, 55, 75));
+
     canvas.setFont(&fonts::Font2);
-    canvas.drawCenterString("SWAP GATEWAY", 237, 46);
+    canvas.setTextColor(canvas.color565(0, 220, 255));
+    canvas.drawString("Logged PIDs (10 Hz Polling):", 20, 162);
 
     canvas.setFont(&fonts::Font0);
     canvas.setTextColor(TFT_WHITE);
-    canvas.drawString("Engine: BMW M57D30", 175, 75);
-    canvas.drawString("Trans: ZF 6HP28", 175, 95);
-    canvas.drawString("Bus: Toyota V-CAN 500k", 175, 115);
-    canvas.drawString("Bridge: ESP32-CAN-X2", 175, 135);
-
-    canvas.setTextColor(canvas.color565(80, 220, 80));
-    canvas.drawString("* CAN Logging Active", 175, 165);
+    canvas.drawString("RPM | Speed | Throttle% | Engine Load% | ECT (Coolant)", 20, 182);
+    canvas.drawString("Cmd/Act AFR | Cmd/Act Lambda | KCLV (Learned) | KFB (Knock)", 20, 196);
 
     drawBottomNavBar();
 }
 
+// Page 3: Wi-Fi & SavvyCAN Streaming
 void renderWiFi() {
     drawHeaderBar("WI-FI SAVVYCAN STREAMING");
 
@@ -747,6 +865,7 @@ void renderWiFi() {
     drawBottomNavBar();
 }
 
+// Page 4: System Diagnostics
 void renderSystem() {
     drawHeaderBar("HARDWARE DIAGNOSTICS");
 
@@ -766,7 +885,7 @@ void renderSystem() {
     snprintf(buf, sizeof(buf), "Free Heap: %u KB", ESP.getFreeHeap() / 1024);
     canvas.drawString(buf, 25, 102);
 
-    snprintf(buf, sizeof(buf), "MicroSD: %s (%s)", sdMounted ? "Mounted" : "None", isLoggingActive ? "REC" : "STBY");
+    snprintf(buf, sizeof(buf), "MicroSD: %s (%s)", sdMounted ? "Mounted" : "None", (currentLogMode != LOG_IDLE) ? "ACTIVE" : "IDLE");
     canvas.drawString(buf, 25, 130);
 
     snprintf(buf, sizeof(buf), "CAN Pins: TX:IO%d  RX:IO%d (500k)", CAN_TX_PIN, CAN_RX_PIN);
@@ -779,12 +898,12 @@ void updateDisplay() {
     canvas.fillScreen(canvas.color565(10, 12, 16));
 
     switch (currentScreen) {
-        case SCREEN_DASHBOARD: renderDashboard(); break;
-        case SCREEN_SNIFFER:   renderSniffer();   break;
-        case SCREEN_TELEMETRY: renderTelemetry(); break;
-        case SCREEN_WIFI:      renderWiFi();      break;
-        case SCREEN_SYSTEM:    renderSystem();    break;
-        default:               renderDashboard(); break;
+        case SCREEN_DASHBOARD: renderDashboard();     break;
+        case SCREEN_SNIFFER:   renderSniffer();       break;
+        case SCREEN_LOGGER:    renderLoggerControl(); break;
+        case SCREEN_WIFI:      renderWiFi();          break;
+        case SCREEN_SYSTEM:    renderSystem();        break;
+        default:               renderDashboard();     break;
     }
 
     canvas.pushSprite(0, 0);
@@ -838,7 +957,7 @@ void prevScreen() {
 }
 
 // =========================================================================
-// Capacitive Touch & Swipe Gesture Detection
+// Capacitive Touch & Gesture / Button Tap Engine
 // =========================================================================
 void handleTouch() {
     int touchX = 0, touchY = 0;
@@ -867,7 +986,7 @@ void handleTouch() {
         Serial.printf("[TOUCH V2] Release at (%d, %d) | deltaX=%d, deltaY=%d, dur=%lums\n", 
                       touchLastX, touchLastY, deltaX, deltaY, duration);
 
-        // 1. Horizontal Swipe Gesture (Drag > 20px in < 1000ms)
+        // 1. Horizontal Swipe Gesture (Drag >= 20px)
         if (abs(deltaX) >= 20 && duration < 1000) {
             if (deltaX < -20) {
                 nextScreen(); // Drag right-to-left -> Next Page
@@ -875,12 +994,45 @@ void handleTouch() {
                 prevScreen(); // Drag left-to-right -> Prev Page
             }
         } 
-        // 2. Direct Tap Detection
-        else if (duration < 450 && abs(deltaX) < 20 && abs(deltaY) < 20) {
-            if (touchLastX > 160) {
-                nextScreen(); // Tap Right Half -> Next Page
-            } else {
-                prevScreen(); // Tap Left Half -> Prev Page
+        // 2. Button / Screen Tap Detection (duration < 500ms and minimal drag)
+        else if (duration < 500 && abs(deltaX) < 20 && abs(deltaY) < 20) {
+            // Check if on Page 2 (Logger Control Screen) for Button Taps
+            if (currentScreen == SCREEN_LOGGER) {
+                // Button 1: CAN Bus Logger (y: 32 - 88)
+                if (touchLastY >= 32 && touchLastY <= 88) {
+                    if (currentLogMode == LOG_CANBUS) {
+                        stopActiveLogger();
+                    } else if (currentLogMode == LOG_IDLE) {
+                        startCanbusLogger();
+                    }
+                    return;
+                }
+                // Button 2: PID Datalogger (y: 94 - 150)
+                else if (touchLastY >= 94 && touchLastY <= 150) {
+                    if (currentLogMode == LOG_DATALOG) {
+                        stopActiveLogger();
+                    } else if (currentLogMode == LOG_IDLE) {
+                        startDataLogger();
+                    }
+                    return;
+                }
+            }
+
+            // Bottom Navigation Bar Tap
+            if (touchLastY >= 210) {
+                if (touchLastX > 160) {
+                    nextScreen();
+                } else {
+                    prevScreen();
+                }
+            } 
+            // General Screen Tap on other pages
+            else if (currentScreen != SCREEN_LOGGER) {
+                if (touchLastX > 160) {
+                    nextScreen();
+                } else {
+                    prevScreen();
+                }
             }
         }
     }
@@ -893,36 +1045,56 @@ void processCAN() {
     twai_message_t message;
     while (twai_receive(&message, 0) == ESP_OK) {
         packetCount++;
-        tripPacketCount++;
         ppsCount++;
         lastCanActivityTime = millis();
-        wakeScreen();
-
-        if (!isLoggingActive) {
-            startTripLogging();
-        }
 
         streamFrameToSavvyCAN(message);
         decodeTacomaFrame(message);
         recordSnifferFrame(message);
 
-        if (isLoggingActive && logFile) {
-            logFile.printf("%lu,0x%03X,%d,%d,", millis(), message.identifier, message.extd, message.data_length_code);
+        // Mode A: Log Raw CAN Bus Frame (if CAN Logger is active)
+        if (currentLogMode == LOG_CANBUS && activeLogFile) {
+            logEntryCount++;
+            activeLogFile.printf("%lu,0x%03X,%d,%d,", millis(), message.identifier, message.extd, message.data_length_code);
             for (int i = 0; i < message.data_length_code; i++) {
-                logFile.printf("%02X", message.data[i]);
-                if (i < message.data_length_code - 1) logFile.print(" ");
+                activeLogFile.printf("%02X", message.data[i]);
+                if (i < message.data_length_code - 1) activeLogFile.print(" ");
             }
-            logFile.println();
+            activeLogFile.println();
 
-            if (tripPacketCount % 50 == 0 || (millis() - lastLogFlushTime >= 1000)) {
-                logFile.flush();
+            if (logEntryCount % 50 == 0 || (millis() - lastLogFlushTime >= 1000)) {
+                activeLogFile.flush();
                 lastLogFlushTime = millis();
             }
         }
     }
+}
 
-    if (isLoggingActive && (millis() - lastCanActivityTime > CAN_INACTIVITY_TIMEOUT_MS)) {
-        stopTripLogging();
+void processDatalogging() {
+    // Mode B: Log Decoded Vehicle PIDs at 10 Hz (every 100ms)
+    if (currentLogMode == LOG_DATALOG && activeLogFile && (millis() - lastDatalogSampleTime >= 100)) {
+        lastDatalogSampleTime = millis();
+        logEntryCount++;
+
+        activeLogFile.printf("%lu,%d,%d,%d,%d,%.2f,%.2f,%.3f,%.3f,%.1f,%.1f,%d\n",
+            millis(),
+            vehicleData.rpm,
+            vehicleData.speedMph,
+            vehicleData.throttlePct,
+            vehicleData.engineLoadPct,
+            vehicleData.commandedAfr,
+            vehicleData.actualAfr,
+            vehicleData.commandedAfr / 14.7f,
+            vehicleData.actualAfr / 14.7f,
+            vehicleData.kclv,
+            vehicleData.knockFB,
+            vehicleData.coolantTempC
+        );
+
+        if (logEntryCount % 20 == 0 || (millis() - lastLogFlushTime >= 1000)) {
+            activeLogFile.flush();
+            lastLogFlushTime = millis();
+        }
     }
 }
 
@@ -960,14 +1132,15 @@ void loop() {
     handleTouch();
     handleWiFiClients();
     processCAN();
+    processDatalogging();
 
-    // Auto-Dim to 15% brightness after 60s of inactivity (stays fully visible)
+    // Auto-Dim to 15% brightness after 60s of inactivity
     if (!isScreenDimmed && (millis() - lastUserActivityTime >= SCREEN_TIMEOUT_MS) && (millis() - lastCanActivityTime >= SCREEN_TIMEOUT_MS)) {
         dimScreen();
     }
 
     // Periodic Toyota OBD-II active queries
-    if (millis() - lastCanActivityTime < 3000 && (millis() - lastObdQueryTime >= 300)) {
+    if (millis() - lastCanActivityTime < 3000 && (millis() - lastObdQueryTime >= 250)) {
         lastObdQueryTime = millis();
         sendToyotaObdQueries();
     }
