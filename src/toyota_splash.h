@@ -1,4 +1,4 @@
-// Official TRD Red Boot Splash (Razor Sharp, Zero Banding)
+// Official TRD Red Boot Splash (Verified RGB565 Colors)
 #pragma once
 #include <Arduino.h>
 

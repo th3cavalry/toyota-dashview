@@ -1045,12 +1045,11 @@ void updateDisplay() {
 }
 
 // =========================================================================
-// Photorealistic 3D Chrome Toyota Boot Splash
+// Official TRD Red Boot Splash
 // =========================================================================
 void showToyotaBootSplash() {
-    tft.startWrite();
-    tft.pushImage(0, 0, 320, 240, toyota_splash_320x240);
-    tft.endWrite();
+    canvas.pushImage(0, 0, 320, 240, toyota_splash_320x240);
+    canvas.pushSprite(0, 0);
     delay(2200);
 }
 
