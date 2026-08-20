@@ -154,9 +154,12 @@ enum DisplayScreen {
 };
 DisplayScreen currentScreen = SCREEN_DASHBOARD;
 
-// Touch State
+// Swipe Gesture Detection State
 bool wasTouched = false;
 int touchStartX = 0;
+int touchStartY = 0;
+int touchLastX = 0;
+int touchLastY = 0;
 unsigned long touchStartTime = 0;
 
 // Live Vehicle Telemetry
@@ -436,7 +439,7 @@ void dimScreen() {
 // Full-Color 320x240 UI Page Renderers
 // =========================================================================
 
-// Draw Top Header Bar on every page
+// Draw Top Header Bar & Page Dots on every page
 void drawHeaderBar(const char* title) {
     canvas.fillRect(0, 0, 320, 24, canvas.color565(18, 18, 24));
     
@@ -462,6 +465,32 @@ void drawHeaderBar(const char* title) {
     canvas.drawFastHLine(0, 24, 320, canvas.color565(40, 40, 50));
 }
 
+// Draw Bottom Swipe Navigation Bar with Active Page Dots
+void drawBottomNavBar() {
+    canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
+    canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
+
+    // Left Arrow
+    canvas.setTextColor(canvas.color565(120, 120, 140));
+    canvas.setFont(&fonts::Font2);
+    canvas.drawString("< SWIPE", 10, 222);
+
+    // 5 Page Dots (Centered)
+    int dotSpacing = 16;
+    int startDotX = 160 - (((SCREEN_COUNT - 1) * dotSpacing) / 2);
+    for (int i = 0; i < SCREEN_COUNT; i++) {
+        int dx = startDotX + (i * dotSpacing);
+        if (i == currentScreen) {
+            canvas.fillCircle(dx, 228, 4, canvas.color565(0, 220, 255)); // Active page (Cyan)
+        } else {
+            canvas.fillCircle(dx, 228, 2, canvas.color565(70, 70, 90));   // Inactive page (Gray)
+        }
+    }
+
+    // Right Arrow
+    canvas.drawRightString("SWIPE >", 310, 222);
+}
+
 // Page 0: Live Vehicle Cluster (Full 320x240 Dashboard)
 void renderDashboard() {
     drawHeaderBar("TOYOTA TACOMA DASHBOARD");
@@ -472,7 +501,6 @@ void renderDashboard() {
     int rpmWidth = map(constrain(vehicleData.rpm, 0, 6000), 0, 6000, 0, 296);
     
     if (rpmWidth > 0) {
-        // Gradient fill: Green -> Yellow -> Red
         for (int i = 0; i < rpmWidth; i++) {
             uint16_t barColor;
             if (i < 170) {
@@ -500,7 +528,7 @@ void renderDashboard() {
     canvas.setFont(&fonts::Font0);
     canvas.drawCenterString("GEAR", 55, 62);
 
-    canvas.setFont(&fonts::Font7); // Extra Large Font
+    canvas.setFont(&fonts::Font7);
     if (vehicleData.tccLocked && vehicleData.gear[0] >= '1' && vehicleData.gear[0] <= '6') {
         snprintf(buf, sizeof(buf), "%sL", vehicleData.gear);
         canvas.setTextColor(canvas.color565(255, 215, 0)); // Gold for Lockup
@@ -552,7 +580,6 @@ void renderDashboard() {
 
     // 5. Throttle & Load Gauges (Bottom, y=160)
     int botY = 160;
-    // Throttle % Bar
     canvas.setTextColor(TFT_WHITE);
     canvas.setFont(&fonts::Font2);
     snprintf(buf, sizeof(buf), "Throttle: %d%%", vehicleData.throttlePct);
@@ -563,7 +590,6 @@ void renderDashboard() {
         canvas.fillRect(12, botY + 20, thrWidth, 10, canvas.color565(0, 180, 255));
     }
 
-    // Engine Load % Bar
     snprintf(buf, sizeof(buf), "Engine Load: %d%%", vehicleData.engineLoadPct);
     canvas.drawString(buf, 165, botY);
     canvas.drawRoundRect(165, botY + 18, 145, 14, 3, canvas.color565(60, 60, 75));
@@ -572,12 +598,7 @@ void renderDashboard() {
         canvas.fillRect(167, botY + 20, loadWidth, 10, canvas.color565(255, 140, 0));
     }
 
-    // Bottom Navigation Bar
-    canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
-    canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
-    canvas.setTextColor(canvas.color565(180, 180, 200));
-    canvas.setFont(&fonts::Font0);
-    canvas.drawCenterString("<< TAP OR SWIPE SCREEN TO CYCLE PAGES >>", 160, 224);
+    drawBottomNavBar();
 }
 
 // Page 1: Live CAN Sniffer
@@ -593,18 +614,15 @@ void renderSniffer() {
 
         canvas.fillRoundRect(8, rowY, 304, 22, 4, (i % 2 == 0) ? canvas.color565(20, 22, 30) : canvas.color565(28, 30, 42));
         
-        // CAN ID
         snprintf(buf, sizeof(buf), "0x%03X", snifferHistory[idx].id);
         canvas.setTextColor(canvas.color565(0, 220, 255));
         canvas.setFont(&fonts::Font2);
         canvas.drawString(buf, 14, rowY + 3);
 
-        // DLC
         snprintf(buf, sizeof(buf), "[%d]", snifferHistory[idx].dlc);
         canvas.setTextColor(canvas.color565(160, 160, 180));
         canvas.drawString(buf, 70, rowY + 3);
 
-        // Payload Hex
         char hexBuf[36] = "";
         for (int b = 0; b < snifferHistory[idx].dlc && b < 8; b++) {
             char bStr[6];
@@ -617,12 +635,7 @@ void renderSniffer() {
         rowY += 26;
     }
 
-    // Bottom Navigation Bar
-    canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
-    canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
-    canvas.setTextColor(canvas.color565(180, 180, 200));
-    canvas.setFont(&fonts::Font0);
-    canvas.drawCenterString("<< PAGE 2/5: CAN SNIFFER >>", 160, 224);
+    drawBottomNavBar();
 }
 
 // Page 2: Telemetry / Speed / IMU
@@ -665,12 +678,7 @@ void renderTelemetry() {
     canvas.setTextColor(canvas.color565(80, 220, 80));
     canvas.drawString("* CAN Logging Active", 175, 165);
 
-    // Bottom Navigation Bar
-    canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
-    canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
-    canvas.setTextColor(canvas.color565(180, 180, 200));
-    canvas.setFont(&fonts::Font0);
-    canvas.drawCenterString("<< PAGE 3/5: TELEMETRY >>", 160, 224);
+    drawBottomNavBar();
 }
 
 // Page 3: Wi-Fi & SavvyCAN Streaming
@@ -712,12 +720,7 @@ void renderWiFi() {
     canvas.setTextColor(canvas.color565(160, 160, 180));
     canvas.drawString("Connect laptop to Wi-Fi -> In SavvyCAN add Network device (Port 23)", 25, 165);
 
-    // Bottom Navigation Bar
-    canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
-    canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
-    canvas.setTextColor(canvas.color565(180, 180, 200));
-    canvas.setFont(&fonts::Font0);
-    canvas.drawCenterString("<< PAGE 4/5: WI-FI STREAMING >>", 160, 224);
+    drawBottomNavBar();
 }
 
 // Page 4: System Diagnostics
@@ -746,12 +749,7 @@ void renderSystem() {
     snprintf(buf, sizeof(buf), "CAN Pins: TX:IO%d  RX:IO%d (500k)", CAN_TX_PIN, CAN_RX_PIN);
     canvas.drawString(buf, 25, 158);
 
-    // Bottom Navigation Bar
-    canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
-    canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
-    canvas.setTextColor(canvas.color565(180, 180, 200));
-    canvas.setFont(&fonts::Font0);
-    canvas.drawCenterString("<< PAGE 5/5: SYSTEM DIAGNOSTICS >>", 160, 224);
+    drawBottomNavBar();
 }
 
 void updateDisplay() {
@@ -775,7 +773,6 @@ void updateDisplay() {
 void showToyotaBootSplash() {
     tft.fillScreen(TFT_BLACK);
 
-    // Center of 320x240 display: (160, 105)
     int cx = 160;
     int cy = 105;
 
@@ -807,7 +804,22 @@ void showToyotaBootSplash() {
 }
 
 // =========================================================================
-// Touch Input Handling
+// Screen Navigation Functions
+// =========================================================================
+void nextScreen() {
+    currentScreen = static_cast<DisplayScreen>((currentScreen + 1) % SCREEN_COUNT);
+    wakeScreen();
+    Serial.printf("[SWIPE] Switched to Next Screen -> Page %d\n", currentScreen);
+}
+
+void prevScreen() {
+    currentScreen = static_cast<DisplayScreen>((currentScreen - 1 + SCREEN_COUNT) % SCREEN_COUNT);
+    wakeScreen();
+    Serial.printf("[SWIPE] Switched to Prev Screen <- Page %d\n", currentScreen);
+}
+
+// =========================================================================
+// Capacitive Touch & Swipe Gesture Detection
 // =========================================================================
 void handleTouch() {
     uint16_t touchX, touchY;
@@ -818,16 +830,37 @@ void handleTouch() {
         if (!wasTouched) {
             wasTouched = true;
             touchStartX = touchX;
+            touchStartY = touchY;
+            touchLastX  = touchX;
+            touchLastY  = touchY;
             touchStartTime = millis();
+        } else {
+            touchLastX = touchX;
+            touchLastY = touchY;
         }
     } else if (wasTouched) {
         wasTouched = false;
+        int deltaX = touchLastX - touchStartX;
+        int deltaY = touchLastY - touchStartY;
         unsigned long duration = millis() - touchStartTime;
 
-        if (duration < 500) {
-            // Tap / Quick Swipe to next screen
-            currentScreen = static_cast<DisplayScreen>((currentScreen + 1) % SCREEN_COUNT);
-            Serial.printf("[TOUCH] Switched to Screen %d\n", currentScreen);
+        // 1. Horizontal Swipe Gesture Detection (Drag > 35px in < 800ms)
+        if (abs(deltaX) > 35 && duration < 800) {
+            if (deltaX < -35) {
+                // Swipe Left -> Go to Next Page
+                nextScreen();
+            } else if (deltaX > 35) {
+                // Swipe Right -> Go to Previous Page
+                prevScreen();
+            }
+        } 
+        // 2. Direct Tap Detection (Quick touch with minimal drag)
+        else if (duration < 350 && abs(deltaX) <= 25 && abs(deltaY) <= 25) {
+            if (touchLastX > 160) {
+                nextScreen(); // Tap on right half -> Next
+            } else {
+                prevScreen(); // Tap on left half -> Previous
+            }
         }
     }
 }
