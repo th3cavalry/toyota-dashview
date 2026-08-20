@@ -110,6 +110,36 @@ bool wifiClientConnected = false;
 unsigned long wifiStreamedCount = 0;
 
 // =========================================================================
+// Selectable PIDs Definition
+// =========================================================================
+struct DatalogPid {
+    const char* idStr;    // Unique key
+    const char* label;    // Short UI label
+    const char* header;   // CSV header field(s)
+    uint8_t mode;         // OBD Mode (0x01, 0x21, 0x00 = Passive CAN)
+    uint8_t pid;          // OBD PID
+    bool enabled;         // Is selected for datalogging
+};
+
+DatalogPid availablePids[] = {
+    {"RPM",    "RPM (Eng Speed)",  "RPM",             0x01, 0x0C, true},
+    {"SPEED",  "SPEED (MPH)",      "Speed_MPH",       0x01, 0x0D, true},
+    {"THR",    "THROTTLE (%)",     "Throttle_Pct",    0x01, 0x11, true},
+    {"LOAD",   "LOAD (Eng Load%)", "Engine_Load_Pct", 0x01, 0x04, true},
+    {"AFR",    "AFR (Cmd / Act)",  "Cmd_AFR,Act_AFR", 0x01, 0x24, true},
+    {"KCLV",   "KCLV (Learned)",   "KCLV",            0x21, 0xA2, true},
+    {"KFB",    "KFB (Knock FB)",   "Knock_FB_deg",    0x21, 0xA2, true},
+    {"ECT",    "ECT (Coolant \xb0" "C)", "Coolant_C", 0x01, 0x05, true},
+    {"GEAR",   "GEAR (Trans/Lock)","Gear,Lockup",     0x00, 0x00, true},
+    {"IAT",    "IAT (Intake \xb0" "C)", "IAT_C",      0x01, 0x0F, false},
+    {"MAF",    "MAF (Airflow g/s)","MAF_gps",         0x01, 0x10, false},
+    {"TIMING", "TIMING (Ign Adv)", "Timing_Adv_deg",  0x01, 0x0E, false}
+};
+#define PID_COUNT (sizeof(availablePids) / sizeof(availablePids[0]))
+
+bool isPidConfigOpen = false; // Is the PID selection modal/view open
+
+// =========================================================================
 // Logging Engine & State Management (Mutually Exclusive)
 // =========================================================================
 enum LoggingMode {
@@ -145,7 +175,7 @@ unsigned long lastDisplayUpdate = 0;
 enum DisplayScreen {
     SCREEN_DASHBOARD = 0,
     SCREEN_SNIFFER   = 1,
-    SCREEN_LOGGER    = 2, // New Dedicated Datalog & CAN Logger Control Page
+    SCREEN_LOGGER    = 2, // Dedicated Datalog & CAN Logger Control Page
     SCREEN_WIFI      = 3,
     SCREEN_SYSTEM    = 4,
     SCREEN_COUNT     = 5
@@ -173,6 +203,9 @@ struct TacomaTelemetry {
     int throttlePct = 0;        // Throttle %
     int engineLoadPct = 0;      // Calculated Engine Load %
     int coolantTempC = 88;      // Coolant Temp °C
+    int iatC = 25;              // Intake Air Temp °C
+    float mafGps = 0.0f;        // MAF Airflow g/s
+    float timingDeg = 10.0f;    // Ignition Timing Advance deg
 } vehicleData;
 
 // Ring buffer for CAN Sniffer View
@@ -276,7 +309,36 @@ void initCAN() {
     }
 }
 
+// Query only active selected PIDs
 void sendToyotaObdQueries() {
+    struct QueryItem {
+        uint8_t mode;
+        uint8_t pid;
+    };
+    QueryItem activeQueries[10];
+    int queryCount = 0;
+
+    for (size_t i = 0; i < PID_COUNT; i++) {
+        if (availablePids[i].enabled && availablePids[i].mode != 0x00) {
+            bool exists = false;
+            for (int q = 0; q < queryCount; q++) {
+                if (activeQueries[q].mode == availablePids[i].mode && activeQueries[q].pid == availablePids[i].pid) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists && queryCount < 10) {
+                activeQueries[queryCount].mode = availablePids[i].mode;
+                activeQueries[queryCount].pid = availablePids[i].pid;
+                queryCount++;
+            }
+        }
+    }
+
+    if (queryCount == 0) return;
+
+    obdQueryIndex = obdQueryIndex % queryCount;
+
     twai_message_t queryMsg;
     queryMsg.identifier = 0x7E0;
     queryMsg.extd = 0;
@@ -284,26 +346,12 @@ void sendToyotaObdQueries() {
     queryMsg.data_length_code = 8;
     memset(queryMsg.data, 0, 8);
 
-    if (obdQueryIndex == 0) {
-        queryMsg.data[0] = 0x02;
-        queryMsg.data[1] = 0x21;
-        queryMsg.data[2] = 0xA2; // Mode 21 PID A2: KCLV & KnockFB
-    } else if (obdQueryIndex == 1) {
-        queryMsg.data[0] = 0x02;
-        queryMsg.data[1] = 0x01;
-        queryMsg.data[2] = 0x24; // Mode 1 PID 24: Actual A/F Sensor Lambda
-    } else if (obdQueryIndex == 2) {
-        queryMsg.data[0] = 0x02;
-        queryMsg.data[1] = 0x01;
-        queryMsg.data[2] = 0x44; // Mode 1 PID 44: Commanded Equivalence Ratio
-    } else {
-        queryMsg.data[0] = 0x02;
-        queryMsg.data[1] = 0x01;
-        queryMsg.data[2] = 0x05; // Mode 1 PID 05: Engine Coolant Temp
-    }
+    queryMsg.data[0] = 0x02;
+    queryMsg.data[1] = activeQueries[obdQueryIndex].mode;
+    queryMsg.data[2] = activeQueries[obdQueryIndex].pid;
 
     twai_transmit(&queryMsg, 0);
-    obdQueryIndex = (obdQueryIndex + 1) % 4;
+    obdQueryIndex = (obdQueryIndex + 1) % queryCount;
 }
 
 void decodeTacomaFrame(const twai_message_t &msg) {
@@ -351,6 +399,15 @@ void decodeTacomaFrame(const twai_message_t &msg) {
             else if (msg.data[2] == 0x05 && msg.data_length_code >= 4) {
                 vehicleData.coolantTempC = (int)msg.data[3] - 40;
             }
+            else if (msg.data[2] == 0x0F && msg.data_length_code >= 4) {
+                vehicleData.iatC = (int)msg.data[3] - 40;
+            }
+            else if (msg.data[2] == 0x10 && msg.data_length_code >= 5) {
+                vehicleData.mafGps = ((msg.data[3] << 8) | msg.data[4]) / 100.0f;
+            }
+            else if (msg.data[2] == 0x0E && msg.data_length_code >= 4) {
+                vehicleData.timingDeg = ((float)msg.data[3] / 2.0f) - 64.0f;
+            }
             else if (msg.data[2] == 0x24 && msg.data_length_code >= 6) {
                 uint16_t rawLambda = (msg.data[3] << 8) | msg.data[4];
                 float lambda = (float)rawLambda / 32768.0f;
@@ -394,7 +451,6 @@ bool mountSD() {
     return false;
 }
 
-// Find next available non-overwriting file: /prefix_0001.csv, /prefix_0002.csv ...
 String generateUniqueFileName(const char* prefix) {
     if (!sdMounted && !mountSD()) {
         return "";
@@ -408,6 +464,15 @@ String generateUniqueFileName(const char* prefix) {
     }
     snprintf(filename, sizeof(filename), "/%s_%lu.csv", prefix, millis() / 1000);
     return String(filename);
+}
+
+// Count active PIDs
+int getActivePidCount() {
+    int count = 0;
+    for (size_t i = 0; i < PID_COUNT; i++) {
+        if (availablePids[i].enabled) count++;
+    }
+    return count;
 }
 
 // =========================================================================
@@ -465,15 +530,24 @@ bool startDataLogger() {
 
     activeLogFile = SD.open(path.c_str(), FILE_WRITE);
     if (activeLogFile) {
-        activeLogFile.println("Timestamp_ms,RPM,Speed_MPH,Throttle_Pct,Engine_Load_Pct,Cmd_AFR,Act_AFR,Cmd_Lambda,Act_Lambda,KCLV,Knock_FB_deg,Coolant_C");
+        // Build dynamic CSV header with only selected PIDs
+        String header = "Timestamp_ms";
+        for (size_t i = 0; i < PID_COUNT; i++) {
+            if (availablePids[i].enabled) {
+                header += ",";
+                header += availablePids[i].header;
+            }
+        }
+        activeLogFile.println(header);
         activeLogFile.flush();
+
         currentLogMode = LOG_DATALOG;
         strncpy(currentLogFileName, path.c_str(), sizeof(currentLogFileName));
         logStartTime = millis();
         logEntryCount = 0;
         lastLogFlushTime = millis();
         lastDatalogSampleTime = millis();
-        Serial.printf("[LOGGER] >>> Started PID Datalogger: %s\n", currentLogFileName);
+        Serial.printf("[LOGGER] >>> Started PID Datalogger: %s with %d active PIDs\n", currentLogFileName, getActivePidCount());
         return true;
     }
     return false;
@@ -540,7 +614,6 @@ bool pollCst3530Touch(int &screenX, int &screenY) {
     uint16_t rawX = ((uint16_t)(buf[7] & 0x0F) << 8) | buf[4];
     uint16_t rawY = ((uint16_t)(buf[7] & 0xF0) << 4) | buf[5];
 
-    // Map native 240x320 portrait to 320x240 landscape (Rotation 1)
     screenX = rawY;
     screenY = 240 - rawX;
 
@@ -739,86 +812,147 @@ void renderSniffer() {
     drawBottomNavBar();
 }
 
-// Page 2: Dedicated Datalog & CAN Logger Control Center (Interactive Touch Buttons)
+// Sub-Screen: Interactive PID Selector Modal
+void renderPidSelector() {
+    char titleBuf[48];
+    snprintf(titleBuf, sizeof(titleBuf), "SELECT DATALOG PIDs (%d/%d)", getActivePidCount(), (int)PID_COUNT);
+    drawHeaderBar(titleBuf);
+
+    // 2 Columns x 6 Rows Grid
+    int startY = 28;
+    int rowHeight = 28;
+    int colWidth = 144;
+
+    for (size_t i = 0; i < PID_COUNT; i++) {
+        int col = (i % 2);
+        int row = (i / 2);
+        int bx = 12 + col * (colWidth + 8);
+        int by = startY + row * (rowHeight + 2);
+
+        uint16_t boxBg = availablePids[i].enabled ? canvas.color565(18, 60, 40) : canvas.color565(24, 26, 34);
+        uint16_t boxBorder = availablePids[i].enabled ? canvas.color565(60, 220, 100) : canvas.color565(55, 60, 75);
+        uint16_t txtColor = availablePids[i].enabled ? canvas.color565(100, 255, 140) : canvas.color565(140, 140, 160);
+
+        canvas.fillRoundRect(bx, by, colWidth, rowHeight, 4, boxBg);
+        canvas.drawRoundRect(bx, by, colWidth, rowHeight, 4, boxBorder);
+
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(availablePids[i].enabled ? canvas.color565(60, 255, 100) : canvas.color565(100, 100, 120));
+        canvas.drawString(availablePids[i].enabled ? "[X]" : "[ ]", bx + 6, by + 5);
+
+        canvas.setTextColor(txtColor);
+        canvas.drawString(availablePids[i].label, bx + 32, by + 5);
+    }
+
+    // Bottom Action Row (ALL, NONE, DONE)
+    int botActionY = 210;
+    
+    // [ ALL ] Button
+    canvas.fillRoundRect(12, botActionY, 65, 26, 4, canvas.color565(30, 40, 60));
+    canvas.drawRoundRect(12, botActionY, 65, 26, 4, canvas.color565(80, 120, 180));
+    canvas.setTextColor(TFT_WHITE);
+    canvas.setFont(&fonts::Font2);
+    canvas.drawCenterString("ALL", 44, botActionY + 5);
+
+    // [ NONE ] Button
+    canvas.fillRoundRect(85, botActionY, 65, 26, 4, canvas.color565(50, 30, 30));
+    canvas.drawRoundRect(85, botActionY, 65, 26, 4, canvas.color565(160, 80, 80));
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawCenterString("NONE", 117, botActionY + 5);
+
+    // [ DONE / SAVE ] Button
+    canvas.fillRoundRect(160, botActionY, 148, 26, 4, canvas.color565(20, 90, 40));
+    canvas.drawRoundRect(160, botActionY, 148, 26, 4, canvas.color565(60, 240, 100));
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawCenterString("SAVE & RETURN", 234, botActionY + 5);
+}
+
+// Page 2: Datalog & CAN Logger Control Center
 void renderLoggerControl() {
+    if (isPidConfigOpen) {
+        renderPidSelector();
+        return;
+    }
+
     drawHeaderBar("DATALOG & CAN LOGGER CONTROL");
 
     char buf[64];
     unsigned long elapsedSec = (currentLogMode != LOG_IDLE) ? ((millis() - logStartTime) / 1000) : 0;
 
-    // ==========================================
-    // BUTTON 1: CAN Bus Logger (canbus_XXXX.csv)
-    // Box: x=12, y=32, w=296, h=56
-    // ==========================================
+    // 1. BUTTON 1: CAN Bus Logger (canbus_XXXX.csv)
+    // Box: x=12, y=28, w=296, h=48
     bool isCanActive = (currentLogMode == LOG_CANBUS);
-    bool canDisabled = (currentLogMode == LOG_DATALOG); // Mutually exclusive locked
+    bool canDisabled = (currentLogMode == LOG_DATALOG);
 
     uint16_t canBgColor = isCanActive ? canvas.color565(160, 20, 20) : (canDisabled ? canvas.color565(30, 32, 40) : canvas.color565(24, 70, 35));
     uint16_t canBorderColor = isCanActive ? canvas.color565(255, 60, 60) : (canDisabled ? canvas.color565(60, 60, 70) : canvas.color565(60, 200, 80));
 
-    canvas.fillRoundRect(12, 32, 296, 56, 6, canBgColor);
-    canvas.drawRoundRect(12, 32, 296, 56, 6, canBorderColor);
+    canvas.fillRoundRect(12, 28, 296, 48, 6, canBgColor);
+    canvas.drawRoundRect(12, 28, 296, 48, 6, canBorderColor);
 
     canvas.setFont(&fonts::Font4);
     if (isCanActive) {
         canvas.setTextColor(TFT_WHITE);
-        canvas.drawString("[STOP CAN LOGGER]", 22, 38);
+        canvas.drawString("[STOP CAN LOGGER]", 22, 32);
         canvas.setFont(&fonts::Font2);
         snprintf(buf, sizeof(buf), "REC: %s (%lu frames, %lum%02lus)", currentLogFileName, logEntryCount, elapsedSec / 60, elapsedSec % 60);
         canvas.setTextColor(canvas.color565(255, 200, 200));
-        canvas.drawString(buf, 22, 64);
+        canvas.drawString(buf, 22, 54);
     } else {
         canvas.setTextColor(canDisabled ? canvas.color565(100, 100, 120) : TFT_WHITE);
-        canvas.drawString("[START CAN LOG]", 22, 38);
+        canvas.drawString("[START CAN LOG]", 22, 32);
         canvas.setFont(&fonts::Font2);
         canvas.setTextColor(canDisabled ? canvas.color565(80, 80, 90) : canvas.color565(180, 240, 180));
-        canvas.drawString(canDisabled ? "Locked (Stop PID Datalogger first)" : "Logs all raw frames -> canbus_XXXX.csv", 22, 64);
+        canvas.drawString(canDisabled ? "Locked (Stop PID Datalogger first)" : "Raw CAN frames -> canbus_XXXX.csv", 22, 54);
     }
 
-    // ==========================================
-    // BUTTON 2: PID Datalogger (datalog_XXXX.csv)
-    // Box: x=12, y=94, w=296, h=56
-    // ==========================================
+    // 2. BUTTON 2: PID Datalogger (datalog_XXXX.csv)
+    // Box: x=12, y=82, w=296, h=48
     bool isDatalogActive = (currentLogMode == LOG_DATALOG);
-    bool datalogDisabled = (currentLogMode == LOG_CANBUS); // Mutually exclusive locked
+    bool datalogDisabled = (currentLogMode == LOG_CANBUS);
 
     uint16_t dlBgColor = isDatalogActive ? canvas.color565(160, 80, 0) : (datalogDisabled ? canvas.color565(30, 32, 40) : canvas.color565(20, 50, 90));
     uint16_t dlBorderColor = isDatalogActive ? canvas.color565(255, 160, 0) : (datalogDisabled ? canvas.color565(60, 60, 70) : canvas.color565(60, 140, 255));
 
-    canvas.fillRoundRect(12, 94, 296, 56, 6, dlBgColor);
-    canvas.drawRoundRect(12, 94, 296, 56, 6, dlBorderColor);
+    canvas.fillRoundRect(12, 82, 296, 48, 6, dlBgColor);
+    canvas.drawRoundRect(12, 82, 296, 48, 6, dlBorderColor);
 
     canvas.setFont(&fonts::Font4);
     if (isDatalogActive) {
         canvas.setTextColor(TFT_WHITE);
-        canvas.drawString("[STOP PID DATALOG]", 22, 100);
+        canvas.drawString("[STOP PID DATALOG]", 22, 86);
         canvas.setFont(&fonts::Font2);
         snprintf(buf, sizeof(buf), "REC: %s (%lu samples, %lum%02lus)", currentLogFileName, logEntryCount, elapsedSec / 60, elapsedSec % 60);
         canvas.setTextColor(canvas.color565(255, 230, 180));
-        canvas.drawString(buf, 22, 126);
+        canvas.drawString(buf, 22, 108);
     } else {
         canvas.setTextColor(datalogDisabled ? canvas.color565(100, 100, 120) : TFT_WHITE);
-        canvas.drawString("[START PID DATALOG]", 22, 100);
+        canvas.drawString("[START PID DATALOG]", 22, 86);
         canvas.setFont(&fonts::Font2);
         canvas.setTextColor(datalogDisabled ? canvas.color565(80, 80, 90) : canvas.color565(180, 220, 255));
-        canvas.drawString(datalogDisabled ? "Locked (Stop CAN Logger first)" : "Logs RPM, Speed, AFR, KCLV, Load, ECT", 22, 126);
+        snprintf(buf, sizeof(buf), "Logs %d Selected PIDs -> datalog_XXXX.csv", getActivePidCount());
+        canvas.drawString(canDisabled ? "Locked (Stop CAN Logger first)" : buf, 22, 108);
     }
 
-    // ==========================================
-    // Bottom Info & PID Summary Card
-    // Box: x=12, y=156, w=296, h=56
-    // ==========================================
-    canvas.fillRoundRect(12, 156, 296, 56, 6, canvas.color565(20, 22, 30));
-    canvas.drawRoundRect(12, 156, 296, 56, 6, canvas.color565(50, 55, 75));
+    // 3. BUTTON 3: Configure Selectable PIDs Button
+    // Box: x=12, y=136, w=296, h=40
+    canvas.fillRoundRect(12, 136, 296, 40, 6, canvas.color565(35, 30, 55));
+    canvas.drawRoundRect(12, 136, 296, 40, 6, canvas.color565(140, 100, 240));
 
     canvas.setFont(&fonts::Font2);
-    canvas.setTextColor(canvas.color565(0, 220, 255));
-    canvas.drawString("Logged PIDs (10 Hz Polling):", 20, 162);
-
+    canvas.setTextColor(canvas.color565(200, 170, 255));
+    snprintf(buf, sizeof(buf), "[+] CONFIGURE PIDs (%d of %d Active)", getActivePidCount(), (int)PID_COUNT);
+    canvas.drawString(buf, 22, 142);
     canvas.setFont(&fonts::Font0);
-    canvas.setTextColor(TFT_WHITE);
-    canvas.drawString("RPM | Speed | Throttle% | Engine Load% | ECT (Coolant)", 20, 182);
-    canvas.drawString("Cmd/Act AFR | Cmd/Act Lambda | KCLV (Learned) | KFB (Knock)", 20, 196);
+    canvas.setTextColor(canvas.color565(160, 150, 180));
+    canvas.drawString("Tap here to customize which parameters are recorded to SD", 22, 160);
+
+    // 4. Status Footer
+    canvas.fillRoundRect(12, 182, 296, 30, 4, canvas.color565(18, 20, 28));
+    canvas.drawRoundRect(12, 182, 296, 30, 4, canvas.color565(45, 50, 65));
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(canvas.color565(0, 220, 255));
+    canvas.drawString("Sampling Rate: 10 Hz (every 100ms) | Storage: MicroSD FAT32", 20, 192);
 
     drawBottomNavBar();
 }
@@ -945,12 +1079,14 @@ void showToyotaBootSplash() {
 // Screen Navigation Functions
 // =========================================================================
 void nextScreen() {
+    if (isPidConfigOpen) return;
     currentScreen = static_cast<DisplayScreen>((currentScreen + 1) % SCREEN_COUNT);
     wakeScreen();
     Serial.printf("[SWIPE] Switched to Next Screen -> Page %d\n", currentScreen);
 }
 
 void prevScreen() {
+    if (isPidConfigOpen) return;
     currentScreen = static_cast<DisplayScreen>((currentScreen - 1 + SCREEN_COUNT) % SCREEN_COUNT);
     wakeScreen();
     Serial.printf("[SWIPE] Switched to Prev Screen <- Page %d\n", currentScreen);
@@ -987,7 +1123,7 @@ void handleTouch() {
                       touchLastX, touchLastY, deltaX, deltaY, duration);
 
         // 1. Horizontal Swipe Gesture (Drag >= 20px)
-        if (abs(deltaX) >= 20 && duration < 1000) {
+        if (abs(deltaX) >= 20 && duration < 1000 && !isPidConfigOpen) {
             if (deltaX < -20) {
                 nextScreen(); // Drag right-to-left -> Next Page
             } else if (deltaX > 20) {
@@ -996,10 +1132,47 @@ void handleTouch() {
         } 
         // 2. Button / Screen Tap Detection (duration < 500ms and minimal drag)
         else if (duration < 500 && abs(deltaX) < 20 && abs(deltaY) < 20) {
-            // Check if on Page 2 (Logger Control Screen) for Button Taps
-            if (currentScreen == SCREEN_LOGGER) {
-                // Button 1: CAN Bus Logger (y: 32 - 88)
-                if (touchLastY >= 32 && touchLastY <= 88) {
+            // A. PID Selector Modal Tap Handling
+            if (currentScreen == SCREEN_LOGGER && isPidConfigOpen) {
+                // Check Grid Taps
+                int startY = 28;
+                int rowHeight = 28;
+                int colWidth = 144;
+
+                for (size_t i = 0; i < PID_COUNT; i++) {
+                    int col = (i % 2);
+                    int row = (i / 2);
+                    int bx = 12 + col * (colWidth + 8);
+                    int by = startY + row * (rowHeight + 2);
+
+                    if (touchLastX >= bx && touchLastX <= bx + colWidth &&
+                        touchLastY >= by && touchLastY <= by + rowHeight) {
+                        availablePids[i].enabled = !availablePids[i].enabled;
+                        Serial.printf("[PID PICKER] Toggled %s -> %s\n", availablePids[i].idStr, availablePids[i].enabled ? "ON" : "OFF");
+                        return;
+                    }
+                }
+
+                // Check Bottom Buttons in PID Picker
+                int botY = 210;
+                if (touchLastY >= botY && touchLastY <= botY + 28) {
+                    if (touchLastX >= 12 && touchLastX <= 77) {
+                        // [ ALL ]
+                        for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = true;
+                    } else if (touchLastX >= 85 && touchLastX <= 150) {
+                        // [ NONE ]
+                        for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = false;
+                    } else if (touchLastX >= 160 && touchLastX <= 310) {
+                        // [ SAVE & RETURN ]
+                        isPidConfigOpen = false;
+                    }
+                    return;
+                }
+            }
+            // B. Page 2 (Logger Control Screen) Normal View
+            else if (currentScreen == SCREEN_LOGGER && !isPidConfigOpen) {
+                // Button 1: CAN Bus Logger (y: 28 - 76)
+                if (touchLastY >= 28 && touchLastY <= 76) {
                     if (currentLogMode == LOG_CANBUS) {
                         stopActiveLogger();
                     } else if (currentLogMode == LOG_IDLE) {
@@ -1007,8 +1180,8 @@ void handleTouch() {
                     }
                     return;
                 }
-                // Button 2: PID Datalogger (y: 94 - 150)
-                else if (touchLastY >= 94 && touchLastY <= 150) {
+                // Button 2: PID Datalogger (y: 82 - 130)
+                else if (touchLastY >= 82 && touchLastY <= 130) {
                     if (currentLogMode == LOG_DATALOG) {
                         stopActiveLogger();
                     } else if (currentLogMode == LOG_IDLE) {
@@ -1016,10 +1189,18 @@ void handleTouch() {
                     }
                     return;
                 }
+                // Button 3: Configure PIDs (y: 136 - 176)
+                else if (touchLastY >= 136 && touchLastY <= 176) {
+                    if (currentLogMode == LOG_IDLE) {
+                        isPidConfigOpen = true;
+                        Serial.println("[PID PICKER] Opened PID Config Screen.");
+                    }
+                    return;
+                }
             }
 
             // Bottom Navigation Bar Tap
-            if (touchLastY >= 210) {
+            if (touchLastY >= 210 && !isPidConfigOpen) {
                 if (touchLastX > 160) {
                     nextScreen();
                 } else {
@@ -1071,25 +1252,47 @@ void processCAN() {
 }
 
 void processDatalogging() {
-    // Mode B: Log Decoded Vehicle PIDs at 10 Hz (every 100ms)
+    // Mode B: Log Selected Vehicle PIDs at 10 Hz (every 100ms)
     if (currentLogMode == LOG_DATALOG && activeLogFile && (millis() - lastDatalogSampleTime >= 100)) {
         lastDatalogSampleTime = millis();
         logEntryCount++;
 
-        activeLogFile.printf("%lu,%d,%d,%d,%d,%.2f,%.2f,%.3f,%.3f,%.1f,%.1f,%d\n",
-            millis(),
-            vehicleData.rpm,
-            vehicleData.speedMph,
-            vehicleData.throttlePct,
-            vehicleData.engineLoadPct,
-            vehicleData.commandedAfr,
-            vehicleData.actualAfr,
-            vehicleData.commandedAfr / 14.7f,
-            vehicleData.actualAfr / 14.7f,
-            vehicleData.kclv,
-            vehicleData.knockFB,
-            vehicleData.coolantTempC
-        );
+        String row = String(millis());
+        for (size_t i = 0; i < PID_COUNT; i++) {
+            if (!availablePids[i].enabled) continue;
+            row += ",";
+            if (strcmp(availablePids[i].idStr, "RPM") == 0) {
+                row += String(vehicleData.rpm);
+            } else if (strcmp(availablePids[i].idStr, "SPEED") == 0) {
+                row += String(vehicleData.speedMph);
+            } else if (strcmp(availablePids[i].idStr, "THR") == 0) {
+                row += String(vehicleData.throttlePct);
+            } else if (strcmp(availablePids[i].idStr, "LOAD") == 0) {
+                row += String(vehicleData.engineLoadPct);
+            } else if (strcmp(availablePids[i].idStr, "AFR") == 0) {
+                row += String(vehicleData.commandedAfr, 2);
+                row += ",";
+                row += String(vehicleData.actualAfr, 2);
+            } else if (strcmp(availablePids[i].idStr, "KCLV") == 0) {
+                row += String(vehicleData.kclv, 1);
+            } else if (strcmp(availablePids[i].idStr, "KFB") == 0) {
+                row += String(vehicleData.knockFB, 1);
+            } else if (strcmp(availablePids[i].idStr, "ECT") == 0) {
+                row += String(vehicleData.coolantTempC);
+            } else if (strcmp(availablePids[i].idStr, "GEAR") == 0) {
+                row += String(vehicleData.gear);
+                row += ",";
+                row += vehicleData.tccLocked ? "1" : "0";
+            } else if (strcmp(availablePids[i].idStr, "IAT") == 0) {
+                row += String(vehicleData.iatC);
+            } else if (strcmp(availablePids[i].idStr, "MAF") == 0) {
+                row += String(vehicleData.mafGps, 2);
+            } else if (strcmp(availablePids[i].idStr, "TIMING") == 0) {
+                row += String(vehicleData.timingDeg, 1);
+            }
+        }
+
+        activeLogFile.println(row);
 
         if (logEntryCount % 20 == 0 || (millis() - lastLogFlushTime >= 1000)) {
             activeLogFile.flush();
