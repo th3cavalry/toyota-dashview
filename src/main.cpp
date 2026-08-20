@@ -145,8 +145,10 @@ DatalogPid availablePids[] = {
 };
 #define PID_COUNT (sizeof(availablePids) / sizeof(availablePids[0]))
 
-bool isPidConfigOpen = false; // Is the PID selection modal/view open
-bool isBootSplashActive = true; // Keep boot splash until screen tapped or engine starts (RPM > 0)
+bool isPidConfigOpen = false;        // Is the PID selection modal/view open
+bool isRawSnifferModalOpen = false;  // Is the floating raw packet terminal modal open
+bool isSnifferPaused = false;        // Freeze live frame view for inspection
+bool isBootSplashActive = true;      // Keep boot splash until screen tapped or engine starts (RPM > 0)
 
 // =========================================================================
 // Logging Engine & State Management (Mutually Exclusive)
@@ -225,7 +227,7 @@ struct RecentFrame {
     uint8_t data[8];
     unsigned long timestamp;
 };
-#define SNIFFER_HISTORY_SIZE 7
+#define SNIFFER_HISTORY_SIZE 16
 RecentFrame snifferHistory[SNIFFER_HISTORY_SIZE];
 int snifferHead = 0;
 
@@ -437,6 +439,7 @@ void decodeTacomaFrame(const twai_message_t &msg) {
 }
 
 void recordSnifferFrame(const twai_message_t &msg) {
+    if (isSnifferPaused) return; // Freeze terminal buffer when paused
     snifferHistory[snifferHead].id = msg.identifier;
     snifferHistory[snifferHead].dlc = msg.data_length_code;
     snifferHistory[snifferHead].timestamp = millis();
@@ -876,41 +879,185 @@ void renderDashboard() {
     drawBottomNavBar();
 }
 
-// Page 1: Live CAN Sniffer (Dark Terminal)
-void renderSniffer() {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "CAN SNIFFER (Total: %lu)", packetCount);
-    drawHeaderBar(buf);
+// Floating Overlay Sub-Screen: Raw Packet Monitor Modal
+void renderRawSnifferModal() {
+    // Header Bar
+    canvas.fillRect(0, 0, 320, 24, canvas.color565(14, 16, 22));
+    canvas.fillRect(0, 0, 5, 24, C_TRD_ORANGE);
+    canvas.fillRect(5, 0, 5, 24, C_TRD_RED);
+    canvas.fillRect(10, 0, 5, 24, C_TRD_BURGUNDY);
 
-    int rowY = 30;
-    for (int i = 0; i < SNIFFER_HISTORY_SIZE; i++) {
-        int idx = (snifferHead - 1 - i + SNIFFER_HISTORY_SIZE) % SNIFFER_HISTORY_SIZE;
-        if (snifferHistory[idx].id == 0 && snifferHistory[idx].dlc == 0) continue;
+    canvas.setTextColor(C_TEXT_WHITE, canvas.color565(14, 16, 22));
+    canvas.setFont(&fonts::Font2);
+    canvas.drawString("RAW CAN STREAM", 22, 4);
 
-        uint16_t rowBg = (i % 2 == 0) ? C_CARD_BG : canvas.color565(22, 26, 36);
-        canvas.fillRoundRect(8, rowY, 304, 23, 4, rowBg);
-        canvas.drawRoundRect(8, rowY, 304, 23, 4, C_CARD_BORDER);
-        
-        snprintf(buf, sizeof(buf), "0x%03X", snifferHistory[idx].id);
+    // Status Pill: STREAMING (Cyan) vs PAUSED (Orange)
+    if (isSnifferPaused) {
+        canvas.fillRoundRect(236, 3, 76, 18, 3, canvas.color565(80, 45, 10));
+        canvas.drawRoundRect(236, 3, 76, 18, 3, C_TRD_ORANGE);
         canvas.setTextColor(C_TRD_ORANGE);
-        canvas.setFont(&fonts::Font2);
-        canvas.drawString(buf, 14, rowY + 4);
+        canvas.setFont(&fonts::Font0);
+        canvas.drawCenterString("PAUSED", 274, 7);
+    } else {
+        canvas.fillRoundRect(220, 3, 92, 18, 3, canvas.color565(10, 40, 50));
+        canvas.drawRoundRect(220, 3, 92, 18, 3, C_TEXT_CYAN);
+        canvas.setTextColor(C_TEXT_CYAN);
+        canvas.setFont(&fonts::Font0);
+        canvas.drawCenterString("STREAMING", 266, 7);
+    }
 
-        snprintf(buf, sizeof(buf), "[%d]", snifferHistory[idx].dlc);
-        canvas.setTextColor(C_TEXT_MUTED);
-        canvas.drawString(buf, 72, rowY + 4);
+    canvas.drawFastHLine(0, 24, 320, C_CARD_BORDER);
 
-        char hexBuf[36] = "";
-        for (int b = 0; b < snifferHistory[idx].dlc && b < 8; b++) {
-            char bStr[6];
-            snprintf(bStr, sizeof(bStr), "%02X ", snifferHistory[idx].data[b]);
-            strcat(hexBuf, bStr);
+    // Table Column Header
+    canvas.fillRect(8, 28, 304, 16, C_CARD_INNER);
+    canvas.drawRoundRect(8, 28, 304, 16, 3, C_CARD_BORDER);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("CAN ID", 16, 32);
+    canvas.drawString("DLC", 72, 32);
+    canvas.drawString("HEX PAYLOAD (BYTES 0..7)", 105, 32);
+
+    // Render Frame Rows (up to 6 rows)
+    char buf[64];
+    int rowY = 48;
+    for (int i = 0; i < 6; i++) {
+        int idx = (snifferHead - 1 - i + SNIFFER_HISTORY_SIZE) % SNIFFER_HISTORY_SIZE;
+        uint16_t rowBg = (i % 2 == 0) ? C_CARD_BG : canvas.color565(22, 26, 36);
+        canvas.fillRoundRect(8, rowY, 304, 24, 4, rowBg);
+        canvas.drawRoundRect(8, rowY, 304, 24, 4, C_CARD_BORDER);
+
+        if (snifferHistory[idx].id != 0 || snifferHistory[idx].dlc != 0) {
+            snprintf(buf, sizeof(buf), "0x%03X", snifferHistory[idx].id);
+            canvas.setTextColor(C_TRD_ORANGE);
+            canvas.setFont(&fonts::Font2);
+            canvas.drawString(buf, 14, rowY + 4);
+
+            snprintf(buf, sizeof(buf), "[%d]", snifferHistory[idx].dlc);
+            canvas.setTextColor(C_TEXT_MUTED);
+            canvas.drawString(buf, 72, rowY + 4);
+
+            char hexBuf[36] = "";
+            for (int b = 0; b < snifferHistory[idx].dlc && b < 8; b++) {
+                char bStr[6];
+                snprintf(bStr, sizeof(bStr), "%02X ", snifferHistory[idx].data[b]);
+                strcat(hexBuf, bStr);
+            }
+            canvas.setTextColor(C_TEXT_WHITE);
+            canvas.drawString(hexBuf, 105, rowY + 4);
+        } else {
+            canvas.setTextColor(C_TEXT_MUTED);
+            canvas.setFont(&fonts::Font0);
+            canvas.drawString("-- Waiting for bus traffic --", 105, rowY + 7);
         }
-        canvas.setTextColor(C_TEXT_WHITE);
-        canvas.drawString(hexBuf, 105, rowY + 4);
 
         rowY += 26;
     }
+
+    // Bottom Action Deck (Pause, Clear, Back)
+    int botY = 206;
+
+    // 1. [ PAUSE / RESUME ] Button (x: 12..98)
+    uint16_t pauseBg = isSnifferPaused ? C_TRD_ORANGE : canvas.color565(25, 35, 52);
+    uint16_t pauseBorder = isSnifferPaused ? canvas.color565(255, 180, 50) : canvas.color565(60, 100, 160);
+    canvas.fillRoundRect(12, botY, 86, 28, 4, pauseBg);
+    canvas.drawRoundRect(12, botY, 86, 28, 4, pauseBorder);
+    canvas.setTextColor(isSnifferPaused ? TFT_BLACK : C_TEXT_WHITE);
+    canvas.setFont(&fonts::Font2);
+    canvas.drawCenterString(isSnifferPaused ? "RESUME" : "PAUSE", 55, botY + 6);
+
+    // 2. [ CLEAR ] Button (x: 104..180)
+    canvas.fillRoundRect(104, botY, 76, 28, 4, canvas.color565(30, 32, 42));
+    canvas.drawRoundRect(104, botY, 76, 28, 4, C_CARD_BORDER);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(&fonts::Font2);
+    canvas.drawCenterString("CLEAR", 142, botY + 6);
+
+    // 3. [ ✖ BACK / CLOSE ] Button (x: 186..308)
+    canvas.fillRoundRect(186, botY, 122, 28, 4, C_TRD_RED);
+    canvas.drawRoundRect(186, botY, 122, 28, 4, canvas.color565(255, 100, 100));
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.setFont(&fonts::Font2);
+    canvas.drawCenterString("BACK / CLOSE", 247, botY + 6);
+}
+
+// Page 1: Live CAN Sniffer & Traffic Monitor
+void renderSniffer() {
+    if (isRawSnifferModalOpen) {
+        renderRawSnifferModal();
+        return;
+    }
+
+    drawHeaderBar("CAN SNIFFER & TRAFFIC MONITOR");
+
+    char buf[64];
+    unsigned long elapsedSec = (currentLogMode != LOG_IDLE) ? ((millis() - logStartTime) / 1000) : 0;
+    bool isCanActive = (currentLogMode == LOG_CANBUS);
+    bool canDisabled = (currentLogMode == LOG_DATALOG);
+
+    // Card 1: CAN Sniffer & Raw Frame Logger Control
+    // Box: x=12, y=28, w=296, h=54
+    uint16_t canBgColor = isCanActive ? canvas.color565(55, 14, 20) : (canDisabled ? canvas.color565(16, 18, 24) : C_CARD_BG);
+    uint16_t canBorderColor = isCanActive ? C_TRD_RED : (canDisabled ? canvas.color565(35, 40, 52) : C_CARD_BORDER);
+
+    canvas.fillRoundRect(12, 28, 296, 54, 6, canBgColor);
+    canvas.drawRoundRect(12, 28, 296, 54, 6, canBorderColor);
+    canvas.fillRect(14, 28, 4, 54, isCanActive ? C_TRD_RED : C_TRD_ORANGE);
+
+    canvas.setFont(&fonts::Font4);
+    if (isCanActive) {
+        canvas.setTextColor(C_TRD_RED);
+        canvas.drawString("[STOP CAN LOGGING]", 26, 32);
+        canvas.setFont(&fonts::Font2);
+        snprintf(buf, sizeof(buf), "REC: %s (%lu frames, %lum%02lus)", currentLogFileName, logEntryCount, elapsedSec / 60, elapsedSec % 60);
+        canvas.setTextColor(canvas.color565(255, 200, 200));
+        canvas.drawString(buf, 26, 56);
+    } else {
+        canvas.setTextColor(canDisabled ? C_TEXT_MUTED : C_TEXT_WHITE);
+        canvas.drawString("[START CAN LOGGING]", 26, 32);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(canDisabled ? canvas.color565(80, 85, 100) : C_TEXT_MUTED);
+        canvas.drawString(canDisabled ? "Locked (Stop PID Datalogger first)" : "Logs raw vehicle bus traffic -> canbus_XXXX.csv", 26, 56);
+    }
+
+    // Card 2: CAN Bus Traffic & Statistics Deck
+    // Box: x=12, y=88, w=296, h=58
+    canvas.fillRoundRect(12, 88, 296, 58, 6, C_CARD_BG);
+    canvas.drawRoundRect(12, 88, 296, 58, 6, C_CARD_BORDER);
+    canvas.fillRect(14, 88, 4, 58, C_TEXT_CYAN);
+
+    canvas.setFont(&fonts::Font2);
+    // Top Row
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("Total Frames:", 24, 94);
+    snprintf(buf, sizeof(buf), "%lu pkts", packetCount);
+    canvas.setTextColor(C_TEXT_CYAN);
+    canvas.drawString(buf, 110, 94);
+
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("Rate:", 196, 94);
+    snprintf(buf, sizeof(buf), "%.0f msg/s", currentPPS);
+    canvas.setTextColor(C_GREEN_OK);
+    canvas.drawString(buf, 238, 94);
+
+    // Bottom Row
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("TWAI Mode:", 24, 118);
+    canvas.setTextColor(C_GREEN_OK);
+    canvas.drawString("500 kbps HS-CAN", 110, 118);
+
+    // Card 3: Raw Packet Stream Terminal Launcher Button
+    // Box: x=12, y=152, w=296, h=52
+    canvas.fillRoundRect(12, 152, 296, 52, 6, canvas.color565(20, 24, 34));
+    canvas.drawRoundRect(12, 152, 296, 52, 6, canvas.color565(45, 60, 85));
+    canvas.fillRect(14, 152, 4, 52, C_TRD_BURGUNDY);
+
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.drawString("[+] VIEW LIVE RAW PACKET STREAM", 26, 158);
+
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("Tap to open live scrolling terminal with pause & frame inspection", 26, 180);
 
     drawBottomNavBar();
 }
@@ -968,92 +1115,86 @@ void renderPidSelector() {
     canvas.drawCenterString("SAVE & RETURN", 234, botActionY + 5);
 }
 
-// Page 2: Datalog & CAN Logger Control Center (Motorsport Control Deck)
+// Page 2: Dedicated PID Vehicle Datalogger & Parameter Recording Deck
 void renderLoggerControl() {
     if (isPidConfigOpen) {
         renderPidSelector();
         return;
     }
 
-    drawHeaderBar("DATALOG & CAN LOGGER CONTROL");
+    drawHeaderBar("PID VEHICLE DATALOGGER");
 
     char buf[64];
     unsigned long elapsedSec = (currentLogMode != LOG_IDLE) ? ((millis() - logStartTime) / 1000) : 0;
-
-    // 1. BUTTON 1: Raw CAN Bus Logger (canbus_XXXX.csv)
-    bool isCanActive = (currentLogMode == LOG_CANBUS);
-    bool canDisabled = (currentLogMode == LOG_DATALOG);
-
-    uint16_t canBgColor = isCanActive ? canvas.color565(55, 14, 20) : (canDisabled ? canvas.color565(16, 18, 24) : C_CARD_BG);
-    uint16_t canBorderColor = isCanActive ? C_TRD_RED : (canDisabled ? canvas.color565(35, 40, 52) : C_CARD_BORDER);
-
-    canvas.fillRoundRect(12, 28, 296, 48, 6, canBgColor);
-    canvas.drawRoundRect(12, 28, 296, 48, 6, canBorderColor);
-    canvas.fillRect(14, 28, 4, 48, isCanActive ? C_TRD_RED : C_TRD_ORANGE);
-
-    canvas.setFont(&fonts::Font4);
-    if (isCanActive) {
-        canvas.setTextColor(C_TRD_RED);
-        canvas.drawString("[STOP CAN LOGGER]", 26, 32);
-        canvas.setFont(&fonts::Font2);
-        snprintf(buf, sizeof(buf), "REC: %s (%lu frames, %lum%02lus)", currentLogFileName, logEntryCount, elapsedSec / 60, elapsedSec % 60);
-        canvas.setTextColor(canvas.color565(255, 200, 200));
-        canvas.drawString(buf, 26, 54);
-    } else {
-        canvas.setTextColor(canDisabled ? C_TEXT_MUTED : C_TEXT_WHITE);
-        canvas.drawString("[START CAN LOG]", 26, 32);
-        canvas.setFont(&fonts::Font2);
-        canvas.setTextColor(canDisabled ? canvas.color565(80, 85, 100) : C_TEXT_MUTED);
-        canvas.drawString(canDisabled ? "Locked (Stop PID Datalogger first)" : "Raw CAN frames -> canbus_XXXX.csv", 26, 54);
-    }
-
-    // 2. BUTTON 2: PID Datalogger (datalog_XXXX.csv)
     bool isDatalogActive = (currentLogMode == LOG_DATALOG);
     bool datalogDisabled = (currentLogMode == LOG_CANBUS);
 
+    // 1. BUTTON 1: PID Datalogger Start / Stop
+    // Box: x=12, y=28, w=296, h=54
     uint16_t dlBgColor = isDatalogActive ? canvas.color565(55, 30, 10) : (datalogDisabled ? canvas.color565(16, 18, 24) : C_CARD_BG);
     uint16_t dlBorderColor = isDatalogActive ? C_TRD_ORANGE : (datalogDisabled ? canvas.color565(35, 40, 52) : C_CARD_BORDER);
 
-    canvas.fillRoundRect(12, 82, 296, 48, 6, dlBgColor);
-    canvas.drawRoundRect(12, 82, 296, 48, 6, dlBorderColor);
-    canvas.fillRect(14, 82, 4, 48, isDatalogActive ? C_TRD_ORANGE : C_TEXT_CYAN);
+    canvas.fillRoundRect(12, 28, 296, 54, 6, dlBgColor);
+    canvas.drawRoundRect(12, 28, 296, 54, 6, dlBorderColor);
+    canvas.fillRect(14, 28, 4, 54, isDatalogActive ? C_TRD_ORANGE : C_TEXT_CYAN);
 
     canvas.setFont(&fonts::Font4);
     if (isDatalogActive) {
         canvas.setTextColor(C_TRD_ORANGE);
-        canvas.drawString("[STOP PID DATALOG]", 26, 86);
+        canvas.drawString("[STOP PID DATALOG]", 26, 32);
         canvas.setFont(&fonts::Font2);
         snprintf(buf, sizeof(buf), "REC: %s (%lu samples, %lum%02lus)", currentLogFileName, logEntryCount, elapsedSec / 60, elapsedSec % 60);
         canvas.setTextColor(canvas.color565(255, 230, 180));
-        canvas.drawString(buf, 26, 108);
+        canvas.drawString(buf, 26, 56);
     } else {
         canvas.setTextColor(datalogDisabled ? C_TEXT_MUTED : C_TEXT_WHITE);
-        canvas.drawString("[START PID DATALOG]", 26, 86);
+        canvas.drawString("[START PID DATALOG]", 26, 32);
         canvas.setFont(&fonts::Font2);
         canvas.setTextColor(datalogDisabled ? canvas.color565(80, 85, 100) : C_TEXT_MUTED);
         snprintf(buf, sizeof(buf), "Logs %d Selected PIDs -> datalog_XXXX.csv", getActivePidCount());
-        canvas.drawString(canDisabled ? "Locked (Stop CAN Logger first)" : buf, 26, 108);
+        canvas.drawString(datalogDisabled ? "Locked (Stop CAN Logger on Page 1 first)" : buf, 26, 56);
     }
 
-    // 3. BUTTON 3: Configure Selectable PIDs Button
-    canvas.fillRoundRect(12, 136, 296, 40, 6, C_CARD_BG);
-    canvas.drawRoundRect(12, 136, 296, 40, 6, C_CARD_BORDER);
-    canvas.fillRect(14, 136, 4, 40, C_TRD_BURGUNDY);
+    // 2. Active Parameters Preview Deck
+    // Box: x=12, y=88, w=296, h=58
+    canvas.fillRoundRect(12, 88, 296, 58, 6, C_CARD_BG);
+    canvas.drawRoundRect(12, 88, 296, 58, 6, C_CARD_BORDER);
+    canvas.fillRect(14, 88, 4, 58, C_TRD_ORANGE);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_WHITE);
-    snprintf(buf, sizeof(buf), "[+] CONFIGURE PIDs (%d of %d Active)", getActivePidCount(), (int)PID_COUNT);
-    canvas.drawString(buf, 26, 142);
-    canvas.setFont(&fonts::Font0);
-    canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Tap here to customize parameters recorded to SD", 26, 160);
+    snprintf(buf, sizeof(buf), "Active Parameters (%d of %d Selected):", getActivePidCount(), (int)PID_COUNT);
+    canvas.drawString(buf, 24, 94);
 
-    // 4. Status Footer
-    canvas.fillRoundRect(12, 182, 296, 30, 4, C_CARD_INNER);
-    canvas.drawRoundRect(12, 182, 296, 30, 4, C_CARD_BORDER);
+    // Build list of active PID tags
+    String tagList = "";
+    int count = 0;
+    for (size_t i = 0; i < PID_COUNT && count < 7; i++) {
+        if (availablePids[i].enabled) {
+            tagList += "[";
+            tagList += availablePids[i].idStr;
+            tagList += "] ";
+            count++;
+        }
+    }
+    if (getActivePidCount() > 7) tagList += "...";
     canvas.setFont(&fonts::Font0);
     canvas.setTextColor(C_TEXT_CYAN);
-    canvas.drawString("Sampling Rate: 10 Hz (100ms) | Storage: MicroSD FAT32", 20, 192);
+    canvas.drawString(tagList.c_str(), 24, 118);
+
+    // 3. Configure Recorded PIDs Button
+    // Box: x=12, y=152, w=296, h=52
+    canvas.fillRoundRect(12, 152, 296, 52, 6, C_CARD_BG);
+    canvas.drawRoundRect(12, 152, 296, 52, 6, C_CARD_BORDER);
+    canvas.fillRect(14, 152, 4, 52, C_TRD_BURGUNDY);
+
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_WHITE);
+    snprintf(buf, sizeof(buf), "[+] CONFIGURE RECORDED PIDs (%d Active)", getActivePidCount());
+    canvas.drawString(buf, 26, 158);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("Tap here to customize parameters recorded to SD (10 Hz rate)", 26, 180);
 
     drawBottomNavBar();
 }
@@ -1313,7 +1454,7 @@ void handleTouch() {
                       touchLastX, touchLastY, deltaX, deltaY, duration);
 
         // 1. Horizontal Swipe: MUST travel at least half the screen width (>= 160px)
-        if (abs(deltaX) >= SWIPE_MIN_DIST_PX && !isPidConfigOpen) {
+        if (abs(deltaX) >= SWIPE_MIN_DIST_PX && !isPidConfigOpen && !isRawSnifferModalOpen) {
             if (deltaX <= -SWIPE_MIN_DIST_PX) {
                 nextScreen(); // Drag right-to-left >= 160px -> Next Page
                 Serial.printf("[SWIPE] Left swipe (%d px) -> Next Screen (%d)\n", deltaX, currentScreen);
@@ -1327,65 +1468,106 @@ void handleTouch() {
         // 2. Stationary Button / Card Tap (Minimal movement < 30px, duration < 600ms)
         // A regular touch NEVER changes screens!
         if (abs(deltaX) < 30 && abs(deltaY) < 30 && duration < 600) {
-            // A. PID Selector Modal Tap Handling
-            if (currentScreen == SCREEN_LOGGER && isPidConfigOpen) {
-                int startY = 28;
-                int rowHeight = 28;
-                int colWidth = 144;
-
-                for (size_t i = 0; i < PID_COUNT; i++) {
-                    int col = (i % 2);
-                    int row = (i / 2);
-                    int bx = 12 + col * (colWidth + 8);
-                    int by = startY + row * (rowHeight + 2);
-
-                    if (touchLastX >= bx && touchLastX <= bx + colWidth &&
-                        touchLastY >= by && touchLastY <= by + rowHeight) {
-                        availablePids[i].enabled = !availablePids[i].enabled;
-                        Serial.printf("[PID PICKER] Toggled %s -> %s\n", availablePids[i].idStr, availablePids[i].enabled ? "ON" : "OFF");
+            // A. Page 1 (CAN Sniffer Page)
+            if (currentScreen == SCREEN_SNIFFER) {
+                // When Floating Raw Packet Terminal is Open
+                if (isRawSnifferModalOpen) {
+                    // Button 1: [ PAUSE / RESUME ] (x: 12..98, y: 204..238)
+                    if (touchLastX >= 12 && touchLastX <= 98 && touchLastY >= 204 && touchLastY <= 238) {
+                        isSnifferPaused = !isSnifferPaused;
+                        Serial.printf("[SNIFFER MODAL] Toggled Pause -> %s\n", isSnifferPaused ? "PAUSED" : "STREAMING");
+                        return;
+                    }
+                    // Button 2: [ CLEAR ] (x: 104..180, y: 204..238)
+                    else if (touchLastX >= 104 && touchLastX <= 180 && touchLastY >= 204 && touchLastY <= 238) {
+                        for (int i = 0; i < SNIFFER_HISTORY_SIZE; i++) {
+                            snifferHistory[i].id = 0;
+                            snifferHistory[i].dlc = 0;
+                        }
+                        snifferHead = 0;
+                        Serial.println("[SNIFFER MODAL] Cleared history buffer.");
+                        return;
+                    }
+                    // Button 3: [ BACK / CLOSE ] (x: 186..308, y: 204..238)
+                    else if (touchLastX >= 186 && touchLastX <= 308 && touchLastY >= 204 && touchLastY <= 238) {
+                        isRawSnifferModalOpen = false;
+                        Serial.println("[SNIFFER MODAL] Closed modal -> Returning to Sniffer Page.");
+                        return;
+                    }
+                    return;
+                }
+                // When Normal Page 1 Sniffer View is Open
+                else {
+                    // Card 1: CAN Logger Start / Stop (y: 28 - 82)
+                    if (touchLastY >= 28 && touchLastY <= 82) {
+                        if (currentLogMode == LOG_CANBUS) {
+                            stopActiveLogger();
+                        } else if (currentLogMode == LOG_IDLE) {
+                            startCanbusLogger();
+                        }
+                        return;
+                    }
+                    // Card 3: Open Raw Packet Terminal (y: 152 - 204)
+                    else if (touchLastY >= 152 && touchLastY <= 204) {
+                        isRawSnifferModalOpen = true;
+                        Serial.println("[SNIFFER] Opened Floating Raw Packet Terminal.");
                         return;
                     }
                 }
-
-                int botY = 210;
-                if (touchLastY >= botY && touchLastY <= botY + 28) {
-                    if (touchLastX >= 12 && touchLastX <= 77) {
-                        for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = true;
-                    } else if (touchLastX >= 85 && touchLastX <= 150) {
-                        for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = false;
-                    } else if (touchLastX >= 160 && touchLastX <= 310) {
-                        isPidConfigOpen = false;
-                    }
-                    return;
-                }
             }
-            // B. Page 2 (Logger Control Screen) Normal View
-            else if (currentScreen == SCREEN_LOGGER && !isPidConfigOpen) {
-                // Button 1: CAN Bus Logger (y: 28 - 76)
-                if (touchLastY >= 28 && touchLastY <= 76) {
-                    if (currentLogMode == LOG_CANBUS) {
-                        stopActiveLogger();
-                    } else if (currentLogMode == LOG_IDLE) {
-                        startCanbusLogger();
+            // B. Page 2 (PID Datalogger Screen)
+            else if (currentScreen == SCREEN_LOGGER) {
+                // When PID Config Modal is Open
+                if (isPidConfigOpen) {
+                    int startY = 28;
+                    int rowHeight = 28;
+                    int colWidth = 144;
+
+                    for (size_t i = 0; i < PID_COUNT; i++) {
+                        int col = (i % 2);
+                        int row = (i / 2);
+                        int bx = 12 + col * (colWidth + 8);
+                        int by = startY + row * (rowHeight + 2);
+
+                        if (touchLastX >= bx && touchLastX <= bx + colWidth &&
+                            touchLastY >= by && touchLastY <= by + rowHeight) {
+                            availablePids[i].enabled = !availablePids[i].enabled;
+                            Serial.printf("[PID PICKER] Toggled %s -> %s\n", availablePids[i].idStr, availablePids[i].enabled ? "ON" : "OFF");
+                            return;
+                        }
                     }
-                    return;
+
+                    int botY = 210;
+                    if (touchLastY >= botY && touchLastY <= botY + 28) {
+                        if (touchLastX >= 12 && touchLastX <= 77) {
+                            for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = true;
+                        } else if (touchLastX >= 85 && touchLastX <= 150) {
+                            for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = false;
+                        } else if (touchLastX >= 160 && touchLastX <= 310) {
+                            isPidConfigOpen = false;
+                        }
+                        return;
+                    }
                 }
-                // Button 2: PID Datalogger (y: 82 - 130)
-                else if (touchLastY >= 82 && touchLastY <= 130) {
-                    if (currentLogMode == LOG_DATALOG) {
-                        stopActiveLogger();
-                    } else if (currentLogMode == LOG_IDLE) {
-                        startDataLogger();
+                // When Normal Page 2 View is Open
+                else {
+                    // Card 1: PID Datalogger Start / Stop (y: 28 - 82)
+                    if (touchLastY >= 28 && touchLastY <= 82) {
+                        if (currentLogMode == LOG_DATALOG) {
+                            stopActiveLogger();
+                        } else if (currentLogMode == LOG_IDLE) {
+                            startDataLogger();
+                        }
+                        return;
                     }
-                    return;
-                }
-                // Button 3: Configure PIDs (y: 136 - 176)
-                else if (touchLastY >= 136 && touchLastY <= 176) {
-                    if (currentLogMode == LOG_IDLE) {
-                        isPidConfigOpen = true;
-                        Serial.println("[PID PICKER] Opened PID Config Screen.");
+                    // Card 3: Configure PIDs Button (y: 152 - 204)
+                    else if (touchLastY >= 152 && touchLastY <= 204) {
+                        if (currentLogMode == LOG_IDLE) {
+                            isPidConfigOpen = true;
+                            Serial.println("[PID PICKER] Opened PID Config Screen.");
+                        }
+                        return;
                     }
-                    return;
                 }
             }
             // C. Page 5 (Settings Page)
