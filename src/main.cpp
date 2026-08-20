@@ -2,8 +2,10 @@
 #include <SPI.h>
 #include <SD.h>
 #include <WiFi.h>
+#include <Wire.h>
 #include "driver/twai.h"
 #include <LovyanGFX.hpp>
+#include <TouchDrv.hpp>
 
 // =========================================================================
 // Waveshare ESP32-S3-Touch-LCD-2.8 LovyanGFX Hardware Configuration
@@ -12,7 +14,6 @@ class LGFX_Waveshare28 : public lgfx::LGFX_Device {
     lgfx::Panel_ST7789      _panel_instance;
     lgfx::Bus_SPI           _bus_instance;
     lgfx::Light_PWM         _light_instance;
-    lgfx::Touch_CST816S     _touch_instance;
 
 public:
     LGFX_Waveshare28(void) {
@@ -63,24 +64,6 @@ public:
             _panel_instance.setLight(&_light_instance);
         }
 
-        {
-            auto cfg = _touch_instance.config();
-            cfg.x_min      = 0;
-            cfg.x_max      = 239;
-            cfg.y_min      = 0;
-            cfg.y_max      = 319;
-            cfg.pin_int    = 4; // TP_INT
-            cfg.bus_shared = false;
-            cfg.offset_rotation = 0;
-            cfg.i2c_port   = 1;
-            cfg.i2c_addr   = 0x1A; // CST328 / CST3530
-            cfg.pin_sda    = 1; // TP_SDA
-            cfg.pin_scl    = 3; // TP_SCL
-            cfg.freq       = 400000;
-            _touch_instance.config(cfg);
-            _panel_instance.setTouch(&_touch_instance);
-        }
-
         setPanel(&_panel_instance);
     }
 };
@@ -102,12 +85,20 @@ LGFX_Sprite canvas(&tft); // Double-buffer sprite for 60FPS flicker-free renderi
 #define SD_SCK_PIN         14
 #define SD_CS_PIN          21
 
-// Touch Reset Pin
+// Capacitive Touch I2C Pins (CST328 / CST3530 / CST816)
+#define TP_SDA_PIN         1
+#define TP_SCL_PIN         3
+#define TP_INT_PIN         4
 #define TP_RST_PIN         2
 
 // Screen Auto-Dim Timeout (60 Seconds)
 #define SCREEN_TIMEOUT_MS          60000 
 #define CAN_INACTIVITY_TIMEOUT_MS  10000 
+
+// Touch Controller Instance
+TouchDrvCSTXXX touch;
+bool touchDriverInitialized = false;
+uint8_t touchAddress = 0x1A;
 
 // =========================================================================
 // Wi-Fi Access Point & SavvyCAN Streaming Server
@@ -305,7 +296,6 @@ void sendToyotaObdQueries() {
 
 void decodeTacomaFrame(const twai_message_t &msg) {
     if (msg.identifier == 0x0B4 && msg.data_length_code >= 8) {
-        // Front Left Wheel Speed in km/h -> MPH
         uint16_t rawSpeed = (msg.data[5] << 8) | msg.data[6];
         vehicleData.speedMph = (rawSpeed * 0.621371f) / 100.0f;
     }
@@ -422,7 +412,7 @@ void wakeScreen() {
     lastUserActivityTime = millis();
     if (isScreenDimmed) {
         isScreenDimmed = false;
-        tft.setBrightness(255); // 100% full brightness
+        tft.setBrightness(255);
         Serial.println("[DISPLAY] Screen Brightness Restored to 100%.");
     }
 }
@@ -430,28 +420,120 @@ void wakeScreen() {
 void dimScreen() {
     if (!isScreenDimmed) {
         isScreenDimmed = true;
-        tft.setBrightness(35); // Gentle 15% dim mode (fully readable)
+        tft.setBrightness(35);
         Serial.println("[DISPLAY] Screen Dimmed to 15% (1 min timeout).");
     }
+}
+
+// =========================================================================
+// Capacitive Touch Driver (CST328 / CST3530 / CST816)
+// =========================================================================
+void initTouchDriver() {
+    pinMode(TP_INT_PIN, INPUT_PULLUP);
+    pinMode(TP_RST_PIN, OUTPUT);
+    digitalWrite(TP_RST_PIN, LOW);
+    delay(30);
+    digitalWrite(TP_RST_PIN, HIGH);
+    delay(100);
+
+    Wire1.begin(TP_SDA_PIN, TP_SCL_PIN, 100000);
+
+    Serial.println("[TOUCH] Scanning Wire1 (SDA:1, SCL:3) for all I2C devices...");
+    int foundCount = 0;
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire1.beginTransmission(addr);
+        if (Wire1.endTransmission() == 0) {
+            touchAddress = addr;
+            foundCount++;
+            Serial.printf("[TOUCH] >>> Found device on Wire1 at 0x%02X!\n", addr);
+        }
+    }
+
+    if (foundCount == 0) {
+        Serial.println("[TOUCH] No devices found on Wire1. Scanning Wire (SDA:11, SCL:10)...");
+        Wire.begin(11, 10, 100000);
+        for (uint8_t addr = 1; addr < 127; addr++) {
+            Wire.beginTransmission(addr);
+            if (Wire.endTransmission() == 0) {
+                Serial.printf("[I2C] Found device on Wire at 0x%02X!\n", addr);
+            }
+        }
+    }
+
+    touch.setPins(TP_RST_PIN, TP_INT_PIN);
+    if (touch.begin(Wire1, touchAddress, TP_SDA_PIN, TP_SCL_PIN)) {
+        touchDriverInitialized = true;
+        Serial.printf("[TOUCH] SensorLib Touch Driver Initialized! Model: %s, ChipID: 0x%X\n", 
+                      touch.getModelName(), touch.getChipID());
+        touch.disableAutoSleep();
+    } else {
+        Serial.printf("[TOUCH] SensorLib init returned false at 0x%02X, using fallback I2C parser.\n", touchAddress);
+    }
+}
+
+// Raw I2C Read Fallback for CST328 / CST3530
+bool readRawCstTouch(int &outX, int &outY) {
+    Wire1.beginTransmission(touchAddress);
+    Wire1.write(0xD0);
+    Wire1.write(0x00);
+    if (Wire1.endTransmission() != 0) {
+        return false;
+    }
+
+    if (Wire1.requestFrom((int)touchAddress, 7) == 7) {
+        uint8_t buf[7];
+        Wire1.readBytes(buf, 7);
+        uint8_t fingerNum = buf[0] & 0x0F;
+        if (fingerNum > 0 && fingerNum <= 5) {
+            uint16_t rawX = ((buf[1] & 0x0F) << 8) | buf[2];
+            uint16_t rawY = ((buf[3] & 0x0F) << 8) | buf[4];
+            
+            // Map 240x320 native portrait to 320x240 landscape (Rotation 1)
+            outX = rawY;
+            outY = 240 - rawX;
+            if (outX < 0) outX = 0;
+            if (outX > 320) outX = 320;
+            if (outY < 0) outY = 0;
+            if (outY > 240) outY = 240;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool pollTouchCoordinates(int &screenX, int &screenY) {
+    if (touchDriverInitialized) {
+        const TouchPoints& pts = touch.getTouchPoints();
+        if (pts.hasPoints()) {
+            uint16_t rawX = pts[0].x;
+            uint16_t rawY = pts[0].y;
+            
+            // Map 240x320 native portrait to 320x240 landscape (Rotation 1)
+            screenX = rawY;
+            screenY = 240 - rawX;
+            if (screenX < 0) screenX = 0;
+            if (screenX > 320) screenX = 320;
+            if (screenY < 0) screenY = 0;
+            if (screenY > 240) screenY = 240;
+            return true;
+        }
+    }
+    
+    // Fallback to direct I2C read
+    return readRawCstTouch(screenX, screenY);
 }
 
 // =========================================================================
 // Full-Color 320x240 UI Page Renderers
 // =========================================================================
 
-// Draw Top Header Bar & Page Dots on every page
 void drawHeaderBar(const char* title) {
     canvas.fillRect(0, 0, 320, 24, canvas.color565(18, 18, 24));
-    
-    // Toyota Red Accent Tag
     canvas.fillRect(0, 0, 4, 24, canvas.color565(235, 10, 30));
-    
-    // Page Title
     canvas.setTextColor(TFT_WHITE, canvas.color565(18, 18, 24));
     canvas.setFont(&fonts::Font2);
     canvas.drawString(title, 10, 4);
 
-    // Status Badges (Right side)
     char buf[32];
     snprintf(buf, sizeof(buf), "%.0f msg/s", currentPPS);
     canvas.setTextColor(canvas.color565(0, 220, 255), canvas.color565(18, 18, 24));
@@ -465,37 +547,31 @@ void drawHeaderBar(const char* title) {
     canvas.drawFastHLine(0, 24, 320, canvas.color565(40, 40, 50));
 }
 
-// Draw Bottom Swipe Navigation Bar with Active Page Dots
 void drawBottomNavBar() {
     canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
     canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
 
-    // Left Arrow
-    canvas.setTextColor(canvas.color565(120, 120, 140));
+    canvas.setTextColor(canvas.color565(140, 140, 160));
     canvas.setFont(&fonts::Font2);
-    canvas.drawString("< SWIPE", 10, 222);
+    canvas.drawString("< PREV", 10, 222);
 
-    // 5 Page Dots (Centered)
     int dotSpacing = 16;
     int startDotX = 160 - (((SCREEN_COUNT - 1) * dotSpacing) / 2);
     for (int i = 0; i < SCREEN_COUNT; i++) {
         int dx = startDotX + (i * dotSpacing);
         if (i == currentScreen) {
-            canvas.fillCircle(dx, 228, 4, canvas.color565(0, 220, 255)); // Active page (Cyan)
+            canvas.fillCircle(dx, 228, 4, canvas.color565(0, 220, 255));
         } else {
-            canvas.fillCircle(dx, 228, 2, canvas.color565(70, 70, 90));   // Inactive page (Gray)
+            canvas.fillCircle(dx, 228, 2, canvas.color565(70, 70, 90));
         }
     }
 
-    // Right Arrow
-    canvas.drawRightString("SWIPE >", 310, 222);
+    canvas.drawRightString("NEXT >", 310, 222);
 }
 
-// Page 0: Live Vehicle Cluster (Full 320x240 Dashboard)
 void renderDashboard() {
     drawHeaderBar("TOYOTA TACOMA DASHBOARD");
 
-    // 1. Top RPM Tachometer Bar (0 - 6000 RPM)
     int rpmY = 30;
     canvas.drawRoundRect(10, rpmY, 300, 16, 4, canvas.color565(60, 60, 75));
     int rpmWidth = map(constrain(vehicleData.rpm, 0, 6000), 0, 6000, 0, 296);
@@ -520,7 +596,6 @@ void renderDashboard() {
     canvas.setFont(&fonts::Font2);
     canvas.drawRightString(buf, 305, rpmY + 18);
 
-    // 2. Large Gear & Lockup Box (Left Side, x=10, y=56, w=90, h=95)
     canvas.fillRoundRect(10, 56, 90, 95, 6, canvas.color565(25, 28, 38));
     canvas.drawRoundRect(10, 56, 90, 95, 6, canvas.color565(60, 65, 85));
     
@@ -531,14 +606,13 @@ void renderDashboard() {
     canvas.setFont(&fonts::Font7);
     if (vehicleData.tccLocked && vehicleData.gear[0] >= '1' && vehicleData.gear[0] <= '6') {
         snprintf(buf, sizeof(buf), "%sL", vehicleData.gear);
-        canvas.setTextColor(canvas.color565(255, 215, 0)); // Gold for Lockup
+        canvas.setTextColor(canvas.color565(255, 215, 0));
     } else {
         snprintf(buf, sizeof(buf), "%s", vehicleData.gear);
         canvas.setTextColor(TFT_WHITE);
     }
     canvas.drawCenterString(buf, 55, 78);
 
-    // TCC Lockup Badge
     if (vehicleData.tccLocked) {
         canvas.fillRoundRect(18, 130, 74, 16, 3, canvas.color565(200, 160, 0));
         canvas.setTextColor(TFT_BLACK);
@@ -546,7 +620,6 @@ void renderDashboard() {
         canvas.drawCenterString("LOCKED", 55, 131);
     }
 
-    // 3. AFR & Lambda Cards (Center Column, x=110, y=56)
     canvas.fillRoundRect(110, 56, 200, 45, 6, canvas.color565(25, 28, 38));
     canvas.drawRoundRect(110, 56, 200, 45, 6, canvas.color565(60, 65, 85));
 
@@ -560,7 +633,6 @@ void renderDashboard() {
     snprintf(buf, sizeof(buf), "Act AFR: %.1f  (%.2f \xce\xbb)", vehicleData.actualAfr, vehicleData.actualAfr / 14.7f);
     canvas.drawString(buf, 118, 80);
 
-    // 4. Knock Correction & Feedback Cards (x=110, y=106)
     canvas.fillRoundRect(110, 106, 200, 45, 6, canvas.color565(25, 28, 38));
     canvas.drawRoundRect(110, 106, 200, 45, 6, canvas.color565(60, 65, 85));
 
@@ -578,7 +650,6 @@ void renderDashboard() {
     canvas.setTextColor(canvas.color565(140, 140, 160));
     canvas.drawString("Learned Knock Value (20.0 = Best)", 118, 133);
 
-    // 5. Throttle & Load Gauges (Bottom, y=160)
     int botY = 160;
     canvas.setTextColor(TFT_WHITE);
     canvas.setFont(&fonts::Font2);
@@ -601,7 +672,6 @@ void renderDashboard() {
     drawBottomNavBar();
 }
 
-// Page 1: Live CAN Sniffer
 void renderSniffer() {
     char buf[64];
     snprintf(buf, sizeof(buf), "CAN SNIFFER (Total: %lu)", packetCount);
@@ -638,11 +708,9 @@ void renderSniffer() {
     drawBottomNavBar();
 }
 
-// Page 2: Telemetry / Speed / IMU
 void renderTelemetry() {
     drawHeaderBar("VEHICLE TELEMETRY & SPEED");
 
-    // Speedometer Box
     canvas.fillRoundRect(10, 36, 145, 165, 6, canvas.color565(25, 28, 38));
     canvas.drawRoundRect(10, 36, 145, 165, 6, canvas.color565(60, 65, 85));
 
@@ -660,7 +728,6 @@ void renderTelemetry() {
     canvas.setTextColor(canvas.color565(0, 220, 255));
     canvas.drawCenterString("MPH", 82, 155);
 
-    // Swap Project Context Card (Right Side)
     canvas.fillRoundRect(165, 36, 145, 165, 6, canvas.color565(25, 28, 38));
     canvas.drawRoundRect(165, 36, 145, 165, 6, canvas.color565(60, 65, 85));
 
@@ -681,7 +748,6 @@ void renderTelemetry() {
     drawBottomNavBar();
 }
 
-// Page 3: Wi-Fi & SavvyCAN Streaming
 void renderWiFi() {
     drawHeaderBar("WI-FI SAVVYCAN STREAMING");
 
@@ -723,7 +789,6 @@ void renderWiFi() {
     drawBottomNavBar();
 }
 
-// Page 4: System Diagnostics
 void renderSystem() {
     drawHeaderBar("HARDWARE DIAGNOSTICS");
 
@@ -776,22 +841,18 @@ void showToyotaBootSplash() {
     int cx = 160;
     int cy = 105;
 
-    // Outer Large Ellipse (Toyota Red Accent)
     for (int t = 0; t < 6; t++) {
         tft.drawEllipse(cx, cy, 100 - t, 60 - t, tft.color565(235, 10, 30));
     }
 
-    // Inner Top Horizontal Ellipse (White)
     for (int t = 0; t < 4; t++) {
         tft.drawEllipse(cx, cy - 14, 68 - t, 32 - t, TFT_WHITE);
     }
 
-    // Inner Vertical Ellipse (White)
     for (int t = 0; t < 4; t++) {
         tft.drawEllipse(cx, cy, 34 - t, 56 - t, TFT_WHITE);
     }
 
-    // Typography
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setFont(&fonts::Font4);
     tft.drawCenterString("TOYOTA", cx, 180);
@@ -800,7 +861,7 @@ void showToyotaBootSplash() {
     tft.setTextColor(tft.color565(160, 160, 180), TFT_BLACK);
     tft.drawCenterString("CAN BUS LOGGER & ANALYZER", cx, 212);
 
-    delay(2000); // 2 second OEM boot splash
+    delay(2000);
 }
 
 // =========================================================================
@@ -822,8 +883,8 @@ void prevScreen() {
 // Capacitive Touch & Swipe Gesture Detection
 // =========================================================================
 void handleTouch() {
-    uint16_t touchX, touchY;
-    bool touched = tft.getTouch(&touchX, &touchY);
+    int touchX = 0, touchY = 0;
+    bool touched = pollTouchCoordinates(touchX, touchY);
 
     if (touched) {
         wakeScreen();
@@ -832,8 +893,9 @@ void handleTouch() {
             touchStartX = touchX;
             touchStartY = touchY;
             touchLastX  = touchX;
-            touchLastY  = touchY;
+            touchLastY  = touchLastY;
             touchStartTime = millis();
+            Serial.printf("[TOUCH] Press at (%d, %d)\n", touchX, touchY);
         } else {
             touchLastX = touchX;
             touchLastY = touchY;
@@ -844,22 +906,23 @@ void handleTouch() {
         int deltaY = touchLastY - touchStartY;
         unsigned long duration = millis() - touchStartTime;
 
-        // 1. Horizontal Swipe Gesture Detection (Drag > 35px in < 800ms)
-        if (abs(deltaX) > 35 && duration < 800) {
-            if (deltaX < -35) {
-                // Swipe Left -> Go to Next Page
-                nextScreen();
-            } else if (deltaX > 35) {
-                // Swipe Right -> Go to Previous Page
-                prevScreen();
+        Serial.printf("[TOUCH] Release at (%d, %d) | deltaX=%d, deltaY=%d, dur=%lums\n", 
+                      touchLastX, touchLastY, deltaX, deltaY, duration);
+
+        // 1. Horizontal Swipe Gesture (Drag > 25px in < 900ms)
+        if (abs(deltaX) >= 25 && duration < 900) {
+            if (deltaX < -25) {
+                nextScreen(); // Drag right-to-left -> Next Page
+            } else if (deltaX > 25) {
+                prevScreen(); // Drag left-to-right -> Prev Page
             }
         } 
-        // 2. Direct Tap Detection (Quick touch with minimal drag)
-        else if (duration < 350 && abs(deltaX) <= 25 && abs(deltaY) <= 25) {
+        // 2. Direct Tap Detection
+        else if (duration < 400 && abs(deltaX) < 25 && abs(deltaY) < 25) {
             if (touchLastX > 160) {
-                nextScreen(); // Tap on right half -> Next
+                nextScreen(); // Tap Right Half -> Next Page
             } else {
-                prevScreen(); // Tap on left half -> Previous
+                prevScreen(); // Tap Left Half -> Prev Page
             }
         }
     }
@@ -915,13 +978,6 @@ void setup() {
     tft.setRotation(1); // Landscape 320x240
     tft.setBrightness(255);
 
-    // Reset touch controller
-    pinMode(TP_RST_PIN, OUTPUT);
-    digitalWrite(TP_RST_PIN, LOW);
-    delay(10);
-    digitalWrite(TP_RST_PIN, HIGH);
-    delay(50);
-
     // Create 320x240 Canvas Sprite
     canvas.setColorDepth(16);
     canvas.createSprite(320, 240);
@@ -929,10 +985,13 @@ void setup() {
     // 2. OEM Toyota Boot Splash Screen
     showToyotaBootSplash();
 
-    // 3. Wi-Fi SoftAP & SavvyCAN Streaming Server
+    // 3. Capacitive Touch Controller (CST328 / CST3530)
+    initTouchDriver();
+
+    // 4. Wi-Fi SoftAP & SavvyCAN Streaming Server
     initWiFiStreaming();
 
-    // 4. CAN Bus & MicroSD
+    // 5. CAN Bus & MicroSD
     initCAN();
     mountSD();
 
