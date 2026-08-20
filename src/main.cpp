@@ -1,103 +1,113 @@
 #include <Arduino.h>
-#include <Wire.h>
 #include <SPI.h>
 #include <SD.h>
 #include <WiFi.h>
 #include "driver/twai.h"
-#include <TinyGPSPlus.h>
-#include <U8g2lib.h>
-#include <XPowersLib.h>
+#include <LovyanGFX.hpp>
 
 // =========================================================================
-// Pin Definitions for LILYGO T-Beam SUPREME ESP32-S3 (Header Pinout)
+// Waveshare ESP32-S3-Touch-LCD-2.8 LovyanGFX Hardware Configuration
+// =========================================================================
+class LGFX_Waveshare28 : public lgfx::LGFX_Device {
+    lgfx::Panel_ST7789      _panel_instance;
+    lgfx::Bus_SPI           _bus_instance;
+    lgfx::Light_PWM         _light_instance;
+    lgfx::Touch_CST816S     _touch_instance;
+
+public:
+    LGFX_Waveshare28(void) {
+        {
+            auto cfg = _bus_instance.config();
+            cfg.spi_host = SPI2_HOST;
+            cfg.spi_mode = 0;
+            cfg.freq_write = 40000000;
+            cfg.freq_read  = 16000000;
+            cfg.spi_3wire  = false;
+            cfg.use_lock   = true;
+            cfg.dma_channel = SPI_DMA_CH_AUTO;
+            cfg.pin_sclk = 40; // LCD_SCLK
+            cfg.pin_mosi = 45; // LCD_MOSI
+            cfg.pin_miso = -1;
+            cfg.pin_dc   = 41; // LCD_DC
+            _bus_instance.config(cfg);
+            _panel_instance.setBus(&_bus_instance);
+        }
+
+        {
+            auto cfg = _panel_instance.config();
+            cfg.pin_cs           = 42; // LCD_CS
+            cfg.pin_rst          = 39; // LCD_RST
+            cfg.pin_busy         = -1;
+            cfg.panel_width      = 240;
+            cfg.panel_height     = 320;
+            cfg.offset_x         = 0;
+            cfg.offset_y         = 0;
+            cfg.offset_rotation  = 0;
+            cfg.dummy_read_pixel = 8;
+            cfg.dummy_read_bits  = 1;
+            cfg.readable         = false;
+            cfg.invert           = true; // IPS panel color inversion
+            cfg.rgb_order        = false;
+            cfg.dlen_16bit       = false;
+            cfg.bus_shared       = false;
+            _panel_instance.config(cfg);
+        }
+
+        {
+            auto cfg = _light_instance.config();
+            cfg.pin_bl = 5; // LCD_BL (Backlight PWM)
+            cfg.invert = false;
+            cfg.freq   = 44100;
+            cfg.pwm_channel = 7;
+            _light_instance.config(cfg);
+            _panel_instance.setLight(&_light_instance);
+        }
+
+        {
+            auto cfg = _touch_instance.config();
+            cfg.x_min      = 0;
+            cfg.x_max      = 239;
+            cfg.y_min      = 0;
+            cfg.y_max      = 319;
+            cfg.pin_int    = 4; // TP_INT
+            cfg.bus_shared = false;
+            cfg.offset_rotation = 0;
+            cfg.i2c_port   = 1;
+            cfg.i2c_addr   = 0x1A; // CST328 / CST3530
+            cfg.pin_sda    = 1; // TP_SDA
+            cfg.pin_scl    = 3; // TP_SCL
+            cfg.freq       = 400000;
+            _touch_instance.config(cfg);
+            _panel_instance.setTouch(&_touch_instance);
+        }
+
+        setPanel(&_panel_instance);
+    }
+};
+
+LGFX_Waveshare28 tft;
+LGFX_Sprite canvas(&tft); // Double-buffer sprite for 60FPS flicker-free rendering
+
+// =========================================================================
+// Pin Definitions (Waveshare ESP32-S3-Touch-LCD-2.8)
 // =========================================================================
 
-// Waveshare SN65HVD230 CAN Transceiver (Connected to Header IO2 & IO3)
-#define CAN_TX_PIN         GPIO_NUM_2
-#define CAN_RX_PIN         GPIO_NUM_3
+// Waveshare SN65HVD230 CAN Transceiver (Connected to 12-PIN Header TXD & RXD)
+#define CAN_TX_PIN         GPIO_NUM_43
+#define CAN_RX_PIN         GPIO_NUM_44
 
-// AXP2101 PMU Dedicated I2C1 Bus
-#define PMU_I2C_SDA        42
-#define PMU_I2C_SCL        41
+// MicroSD (TF Card Slot) SPI Pins
+#define SD_MOSI_PIN        17
+#define SD_MISO_PIN        16
+#define SD_SCK_PIN         14
+#define SD_CS_PIN          21
 
-// Primary Onboard I2C0 Bus (OLED Display, BME280, QMC6310)
-#define BOARD_I2C_SDA      17
-#define BOARD_I2C_SCL      18
-
-// u-blox MAX-M10S GNSS Hardware Pins
-#define GPS_RX_PIN         9   // ESP32-S3 RX <- GPS TX
-#define GPS_TX_PIN         8   // ESP32-S3 TX -> GPS RX
-#define GPS_EN_PIN         7   // GPS Power Enable (Active HIGH)
-#define GPS_PPS_PIN        6   // GPS Pulse-Per-Second
-#define GPS_BAUD           38400
-
-// T-Beam SUPREME ESP32-S3 Dedicated SPI Bus
-#define SDCARD_MOSI_PIN    35
-#define SDCARD_MISO_PIN    37
-#define SDCARD_SCK_PIN     36
-#define SDCARD_CS_PIN      47
-
-// LoRa SX1262 Radio Hardware Shutdown Pins
-#define LORA_CS_PIN        10
-#define LORA_RST_PIN       5
-#define LORA_BUSY_PIN      4
-#define LORA_DIO1_PIN      1
-#define IMU_CS_PIN         34
-
-// Onboard User / Boot Button (Short press = Page, Long press = Toggle Blue LED)
-#define USER_BUTTON_PIN    0
+// Touch Reset Pin
+#define TP_RST_PIN         2
 
 // Screen Auto-Dim Timeout (60 Seconds)
 #define SCREEN_TIMEOUT_MS          60000 
 #define CAN_INACTIVITY_TIMEOUT_MS  10000 
-
-// =========================================================================
-// Toyota Emblem 72x42 1-Bit Monochrome Bitmap (Centered on 128x64)
-// =========================================================================
-static const unsigned char toyota_logo_72x42[] U8X8_PROGMEM = {
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0xE0, 0xFF, 0x07, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0xF0, 0xFF, 0xFF, 0xFF, 0x0F, 0x00, 0x00,
-    0x00, 0x00, 0xFC, 0x1F, 0x7E, 0xF8, 0x3F, 0x00, 0x00,
-    0x00, 0x80, 0xFF, 0x00, 0xC3, 0x00, 0xFF, 0x01, 0x00,
-    0x00, 0xC0, 0x0F, 0xC0, 0xFF, 0x03, 0xF0, 0x03, 0x00,
-    0x00, 0xF0, 0x03, 0xFE, 0xFF, 0x7F, 0xC0, 0x0F, 0x00,
-    0x00, 0xF8, 0xC0, 0xDF, 0x00, 0xFB, 0x03, 0x1F, 0x00,
-    0x00, 0x3C, 0xF0, 0xC1, 0x00, 0x83, 0x0F, 0x3C, 0x00,
-    0x00, 0x1F, 0x38, 0x60, 0x00, 0x06, 0x1C, 0xF8, 0x00,
-    0x00, 0x07, 0x0C, 0x60, 0x00, 0x06, 0x30, 0xE0, 0x00,
-    0x80, 0x03, 0x06, 0x60, 0x00, 0x06, 0x60, 0xC0, 0x01,
-    0xC0, 0x01, 0x03, 0x60, 0x00, 0x06, 0xC0, 0x80, 0x03,
-    0xE0, 0x01, 0x03, 0x30, 0x00, 0x0C, 0xC0, 0x80, 0x07,
-    0xE0, 0x00, 0x03, 0x30, 0x00, 0x0C, 0xC0, 0x00, 0x07,
-    0xE0, 0x00, 0x03, 0x30, 0x00, 0x0C, 0xC0, 0x00, 0x07,
-    0x70, 0x00, 0x06, 0x30, 0x00, 0x0C, 0x60, 0x00, 0x0E,
-    0x70, 0x00, 0x0C, 0x30, 0x00, 0x0C, 0x30, 0x00, 0x0E,
-    0x70, 0x00, 0x38, 0x30, 0x00, 0x0C, 0x1C, 0x00, 0x0E,
-    0x70, 0x00, 0xF0, 0x31, 0x00, 0x8C, 0x0F, 0x00, 0x0E,
-    0x70, 0x00, 0xC0, 0x3F, 0x00, 0xFC, 0x03, 0x00, 0x0E,
-    0x70, 0x00, 0x00, 0xFE, 0xFF, 0x7F, 0x00, 0x00, 0x0E,
-    0xE0, 0x00, 0x00, 0xF0, 0xFF, 0x0F, 0x00, 0x00, 0x07,
-    0xE0, 0x00, 0x00, 0x30, 0x00, 0x0C, 0x00, 0x00, 0x07,
-    0xE0, 0x01, 0x00, 0x30, 0x00, 0x0C, 0x00, 0x80, 0x07,
-    0xC0, 0x01, 0x00, 0x60, 0x00, 0x06, 0x00, 0x80, 0x03,
-    0x80, 0x03, 0x00, 0x60, 0x00, 0x06, 0x00, 0xC0, 0x01,
-    0x00, 0x07, 0x00, 0x60, 0x00, 0x06, 0x00, 0xE0, 0x00,
-    0x00, 0x1F, 0x00, 0x60, 0x00, 0x06, 0x00, 0xF8, 0x00,
-    0x00, 0x3C, 0x00, 0xC0, 0x00, 0x03, 0x00, 0x3C, 0x00,
-    0x00, 0xF8, 0x00, 0xC0, 0x00, 0x03, 0x00, 0x1F, 0x00,
-    0x00, 0xF0, 0x03, 0x80, 0x81, 0x01, 0xC0, 0x0F, 0x00,
-    0x00, 0xC0, 0x0F, 0x80, 0x81, 0x01, 0xF0, 0x03, 0x00,
-    0x00, 0x80, 0xFF, 0x00, 0xC3, 0x00, 0xFF, 0x01, 0x00,
-    0x00, 0x00, 0xFC, 0x1F, 0x7E, 0xF8, 0x3F, 0x00, 0x00,
-    0x00, 0x00, 0xF0, 0xFF, 0xFF, 0xFF, 0x0F, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0xE0, 0xFF, 0x07, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-};
 
 // =========================================================================
 // Wi-Fi Access Point & SavvyCAN Streaming Server
@@ -112,16 +122,9 @@ bool wifiClientConnected = false;
 unsigned long wifiStreamedCount = 0;
 
 // =========================================================================
-// Hardware Instances
+// Hardware Instances & State Variables
 // =========================================================================
-TwoWire PMUWire = TwoWire(1);
-XPowersAXP2101 PMU;
-TinyGPSPlus gps;
-HardwareSerial GPSSerial(1);
 SPIClass sdSPI(HSPI);
-
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
 File logFile;
 bool sdMounted = false;
 bool isLoggingActive = false;
@@ -131,8 +134,6 @@ unsigned long tripPacketCount = 0;
 unsigned long lastCanActivityTime = 0;
 unsigned long lastSdRetryTime = 0;
 unsigned long lastLogFlushTime = 0;
-unsigned long lastPowerPrintTime = 0;
-unsigned long lastGpsDebugTime = 0;
 unsigned long lastObdQueryTime = 0;
 unsigned long lastUserActivityTime = 0;
 bool isScreenDimmed = false;
@@ -141,38 +142,29 @@ unsigned long ppsCount = 0;
 float currentPPS = 0;
 unsigned long lastPPSCheck = 0;
 unsigned long lastDisplayUpdate = 0;
-uint8_t oledI2CAddress = 0x3C;
-bool displayFound = false;
 
-// Blue LED Management (AXP2101 CHGLED)
-enum BlueLedMode {
-    LED_MODE_OFF = 0,
-    LED_MODE_AUTO = 1,
-    LED_MODE_BLINK = 2,
-    LED_MODE_COUNT = 3
-};
-BlueLedMode currentLedMode = LED_MODE_OFF;
-unsigned long ledBannerUntil = 0;
-const char* ledBannerText = "";
-
-// 5 Dedicated UI Screens
+// 5 Dedicated Full-Color UI Screens
 enum DisplayScreen {
     SCREEN_DASHBOARD = 0,
     SCREEN_SNIFFER   = 1,
-    SCREEN_GPS       = 2,
-    SCREEN_POWER     = 3,
-    SCREEN_WIFI      = 4,
+    SCREEN_TELEMETRY = 2,
+    SCREEN_WIFI      = 3,
+    SCREEN_SYSTEM    = 4,
     SCREEN_COUNT     = 5
 };
 DisplayScreen currentScreen = SCREEN_DASHBOARD;
-unsigned long buttonDownTime = 0;
-bool buttonIsPressed = false;
 
-// Live Vehicle State for Display View
+// Touch State
+bool wasTouched = false;
+int touchStartX = 0;
+unsigned long touchStartTime = 0;
+
+// Live Vehicle Telemetry
 struct TacomaTelemetry {
     char gear[4] = "P";         // P, R, N, 1, 2, 3, 4, 5, 6
     bool tccLocked = false;     // Torque Converter Lockup (TCC)
     int rpm = 0;
+    int speedMph = 0;
     float commandedAfr = 14.7f; // Target / Commanded AFR
     float actualAfr = 14.7f;    // Live Wideband A/F Sensor AFR
     float kclv = 20.0f;         // Knock Correct Learn Value
@@ -188,35 +180,9 @@ struct RecentFrame {
     uint8_t data[8];
     unsigned long timestamp;
 };
-#define SNIFFER_HISTORY_SIZE 4
+#define SNIFFER_HISTORY_SIZE 7
 RecentFrame snifferHistory[SNIFFER_HISTORY_SIZE];
 int snifferHead = 0;
-
-// Helper for battery charging state
-const char* getChargePhaseString(int &approxCurrentMa) {
-    xpowers_chg_status_t status = PMU.getChargerStatus();
-    switch (status) {
-        case XPOWERS_AXP2101_CHG_TRI_STATE:
-            approxCurrentMa = 50;
-            return "TRICKLE (50mA)";
-        case XPOWERS_AXP2101_CHG_PRE_STATE:
-            approxCurrentMa = 200;
-            return "PRE-CHG (200mA)";
-        case XPOWERS_AXP2101_CHG_CC_STATE:
-            approxCurrentMa = 1000;
-            return "FAST-CC (1.0A)";
-        case XPOWERS_AXP2101_CHG_CV_STATE:
-            approxCurrentMa = 400;
-            return "TAPER-CV (4.2V)";
-        case XPOWERS_AXP2101_CHG_DONE_STATE:
-            approxCurrentMa = 0;
-            return "DONE (100%)";
-        case XPOWERS_AXP2101_CHG_STOP_STATE:
-        default:
-            approxCurrentMa = 0;
-            return PMU.isVbusIn() ? "STANDBY" : "DISCHARGING";
-    }
-}
 
 // =========================================================================
 // Wi-Fi GVRET Streaming to SavvyCAN
@@ -287,146 +253,27 @@ void handleWiFiClients() {
 }
 
 // =========================================================================
-// LoRa SX1262 Hardware Shutdown
+// CAN Driver Initialization & Toyota OBD Queries
 // =========================================================================
-void shutdownLoRa() {
-    pinMode(LORA_CS_PIN, OUTPUT);
-    digitalWrite(LORA_CS_PIN, HIGH);
-    
-    pinMode(LORA_RST_PIN, OUTPUT);
-    digitalWrite(LORA_RST_PIN, LOW);
-    
-    pinMode(LORA_BUSY_PIN, INPUT);
-    pinMode(LORA_DIO1_PIN, INPUT);
-    Serial.println("[LORA] SX1262 placed in permanent hardware reset. Safe to remove antenna.");
-}
+void initCAN() {
+    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
+    twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
+    twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
-// =========================================================================
-// Power Management & Battery Charger
-// =========================================================================
-void applyLedMode() {
-    switch (currentLedMode) {
-        case LED_MODE_OFF:
-            PMU.setChargingLedMode(XPOWERS_CHG_LED_OFF);
-            ledBannerText = "BLUE LED: OFF";
-            break;
-        case LED_MODE_AUTO:
-            PMU.setChargingLedMode(XPOWERS_CHG_LED_CTRL_CHG);
-            ledBannerText = "BLUE LED: AUTO";
-            break;
-        case LED_MODE_BLINK:
-            PMU.setChargingLedMode(XPOWERS_CHG_LED_BLINK_1HZ);
-            ledBannerText = "BLUE LED: BLINK";
-            break;
-        default:
-            break;
-    }
-    ledBannerUntil = millis() + 2000;
-    Serial.printf("[PMU] %s\n", ledBannerText);
-}
-
-void initPMU() {
-    PMUWire.begin(PMU_I2C_SDA, PMU_I2C_SCL);
-    if (!PMU.begin(PMUWire, AXP2101_SLAVE_ADDRESS, PMU_I2C_SDA, PMU_I2C_SCL)) {
-        Serial.println("[PMU] ERROR: AXP2101 not detected on I2C1!");
+    if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
+        Serial.printf("[CAN] TWAI driver installed on TX: IO%d, RX: IO%d (Normal 500k Mode).\n", CAN_TX_PIN, CAN_RX_PIN);
+    } else {
+        Serial.println("[CAN] Failed to install TWAI driver.");
         return;
     }
 
-    Serial.println("[PMU] AXP2101 detected. Enabling DC1 & Power rails...");
-
-    PMU.setDC1Voltage(3300); PMU.enableDC1();
-    PMU.setALDO1Voltage(3300); PMU.enableALDO1();
-    PMU.setALDO2Voltage(3300); PMU.enableALDO2();
-    PMU.setALDO3Voltage(3300); PMU.enableALDO3();
-    PMU.setALDO4Voltage(3300); PMU.enableALDO4();
-    PMU.setBLDO1Voltage(3300); PMU.enableBLDO1();
-    PMU.setBLDO2Voltage(3300); PMU.enableBLDO2();
-    PMU.setDLDO1Voltage(3300); PMU.enableDLDO1();
-    PMU.setDLDO2Voltage(3300); PMU.enableDLDO2();
-
-    PMU.enableBattDetection();
-    PMU.enableVbusVoltageMeasure();
-    PMU.enableBattVoltageMeasure();
-    PMU.enableSystemVoltageMeasure();
-    PMU.enableTemperatureMeasure();
-
-    PMU.setPrechargeCurr(XPOWERS_AXP2101_PRECHARGE_200MA);
-    PMU.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_1000MA);
-    PMU.setChargerTerminationCurr(XPOWERS_AXP2101_CHG_ITERM_25MA);
-    PMU.setChargeTargetVoltage(XPOWERS_AXP2101_CHG_VOL_4V2);
-    PMU.setThermaThreshold(XPOWERS_AXP2101_THREMAL_120DEG);
-    PMU.fuelGaugeControl(true, true);
-
-    PMU.writeRegister(0x50, 0x00);
-    PMU.writeRegister(0x58, 0x00);
-
-    applyLedMode();
-}
-
-void initGPS() {
-    pinMode(GPS_EN_PIN, OUTPUT);
-    digitalWrite(GPS_EN_PIN, HIGH);
-    delay(50);
-
-    GPSSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-    Serial.printf("[GPS] MAX-M10S UART initialized at %d baud (RX: IO%d, TX: IO%d, EN: IO%d)\n",
-                  GPS_BAUD, GPS_RX_PIN, GPS_TX_PIN, GPS_EN_PIN);
-}
-
-// =========================================================================
-// OLED Initialization & Dimming Control + Clean Centered Logo Boot Splash
-// =========================================================================
-void wakeScreen() {
-    lastUserActivityTime = millis();
-    if (isScreenDimmed) {
-        isScreenDimmed = false;
-        u8g2.setContrast(255);
-        Serial.println("[OLED] Screen Brightness Restored to 100%.");
+    if (twai_start() == ESP_OK) {
+        Serial.println("[CAN] TWAI started successfully.");
+    } else {
+        Serial.println("[CAN] Failed to start TWAI.");
     }
 }
 
-void dimScreen() {
-    if (!isScreenDimmed) {
-        isScreenDimmed = true;
-        u8g2.setContrast(1);
-        Serial.println("[OLED] Screen Dimmed to Low Brightness (1 min timeout).");
-    }
-}
-
-void initOLED() {
-    Wire.begin(BOARD_I2C_SDA, BOARD_I2C_SCL);
-    delay(100);
-
-    oledI2CAddress = 0x3C;
-    displayFound = false;
-
-    for (uint8_t addr = 1; addr < 127; addr++) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) {
-            if (addr == 0x3C || addr == 0x3D) {
-                oledI2CAddress = addr;
-                displayFound = true;
-            }
-        }
-    }
-
-    u8g2.setI2CAddress(oledI2CAddress * 2);
-    u8g2.begin();
-    u8g2.setPowerSave(0);
-    u8g2.setContrast(255);
-
-    // Boot Splash: Clean, Centered Toyota 3-Oval Emblem
-    u8g2.clearBuffer();
-    u8g2.drawXBMP(28, 11, 72, 42, toyota_logo_72x42);
-    u8g2.sendBuffer();
-    delay(2000);
-
-    lastUserActivityTime = millis();
-}
-
-// =========================================================================
-// CAN Frame Decoding & Live Querying
-// =========================================================================
 void sendToyotaObdQueries() {
     twai_message_t queryMsg;
     queryMsg.identifier = 0x7E0;
@@ -438,15 +285,15 @@ void sendToyotaObdQueries() {
     if (obdQueryIndex == 0) {
         queryMsg.data[0] = 0x02;
         queryMsg.data[1] = 0x21;
-        queryMsg.data[2] = 0xA2;
+        queryMsg.data[2] = 0xA2; // KCLV & KnockFB
     } else if (obdQueryIndex == 1) {
         queryMsg.data[0] = 0x02;
         queryMsg.data[1] = 0x01;
-        queryMsg.data[2] = 0x24;
+        queryMsg.data[2] = 0x24; // Actual A/F Sensor Lambda
     } else {
         queryMsg.data[0] = 0x02;
         queryMsg.data[1] = 0x01;
-        queryMsg.data[2] = 0x44;
+        queryMsg.data[2] = 0x44; // Commanded Equivalence Ratio Lambda
     }
 
     twai_transmit(&queryMsg, 0);
@@ -454,10 +301,14 @@ void sendToyotaObdQueries() {
 }
 
 void decodeTacomaFrame(const twai_message_t &msg) {
-    if (msg.identifier == 0x3BC && msg.data_length_code >= 5) {
+    if (msg.identifier == 0x0B4 && msg.data_length_code >= 8) {
+        // Front Left Wheel Speed in km/h -> MPH
+        uint16_t rawSpeed = (msg.data[5] << 8) | msg.data[6];
+        vehicleData.speedMph = (rawSpeed * 0.621371f) / 100.0f;
+    }
+    else if (msg.identifier == 0x3BC && msg.data_length_code >= 5) {
         uint8_t lever = msg.data[0];
         uint8_t rawGear = msg.data[2] & 0x0F;
-        
         vehicleData.tccLocked = (msg.data[3] & 0x80) || (msg.data[4] & 0x01);
 
         if (lever == 0x00) {
@@ -520,50 +371,17 @@ void recordSnifferFrame(const twai_message_t &msg) {
     snifferHead = (snifferHead + 1) % SNIFFER_HISTORY_SIZE;
 }
 
-void initCAN() {
-    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
-    twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
-    twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-
-    if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
-        Serial.printf("[CAN] TWAI driver installed on TX: IO%d, RX: IO%d (Normal 500k Mode).\n", CAN_TX_PIN, CAN_RX_PIN);
-    } else {
-        Serial.println("[CAN] Failed to install TWAI driver.");
-        return;
-    }
-
-    if (twai_start() == ESP_OK) {
-        Serial.println("[CAN] TWAI started.");
-    } else {
-        Serial.println("[CAN] Failed to start TWAI.");
-    }
-}
-
+// =========================================================================
+// MicroSD Card Logging
+// =========================================================================
 bool mountSD() {
-    pinMode(LORA_CS_PIN, OUTPUT);
-    digitalWrite(LORA_CS_PIN, HIGH);
-
-    pinMode(IMU_CS_PIN, OUTPUT);
-    digitalWrite(IMU_CS_PIN, HIGH);
-
-    pinMode(SDCARD_CS_PIN, OUTPUT);
-    digitalWrite(SDCARD_CS_PIN, HIGH);
-
-    sdSPI.begin(SDCARD_SCK_PIN, SDCARD_MISO_PIN, SDCARD_MOSI_PIN, SDCARD_CS_PIN);
-    
-    if (SD.begin(SDCARD_CS_PIN, sdSPI, 20000000)) {
+    sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+    if (SD.begin(SD_CS_PIN, sdSPI, 20000000)) {
         sdMounted = true;
         uint64_t cardSize = SD.cardSize() / (1024 * 1024);
         Serial.printf("[SD] MicroSD Mounted! Card size: %llu MB\n", cardSize);
         return true;
     }
-
-    if (SD.begin(SDCARD_CS_PIN, sdSPI, 10000000)) {
-        sdMounted = true;
-        Serial.println("[SD] MicroSD Mounted (10MHz).");
-        return true;
-    }
-
     sdMounted = false;
     return false;
 }
@@ -573,24 +391,15 @@ void startTripLogging() {
         return;
     }
 
-    if (gps.date.isValid() && gps.time.isValid() && gps.date.year() >= 2024) {
-        snprintf(currentLogFileName, sizeof(currentLogFileName), "/tac_%04d%02d%02d_%02d%02d%02d.csv",
-                 gps.date.year(), gps.date.month(), gps.date.day(),
-                 gps.time.hour(), gps.time.minute(), gps.time.second());
-    } else {
-        snprintf(currentLogFileName, sizeof(currentLogFileName), "/tacoma_trip_%lu.csv", millis() / 1000);
-    }
-
+    snprintf(currentLogFileName, sizeof(currentLogFileName), "/tacoma_trip_%lu.csv", millis() / 1000);
     logFile = SD.open(currentLogFileName, FILE_WRITE);
     if (logFile) {
-        logFile.println("Timestamp_ms,GPS_Time,Latitude,Longitude,Speed_kmh,Altitude_m,CAN_ID,Ext,DLC,Data");
+        logFile.println("Timestamp_ms,CAN_ID,Ext,DLC,Data");
         logFile.flush();
         isLoggingActive = true;
         tripPacketCount = 0;
         lastLogFlushTime = millis();
         Serial.printf("[SD] >>> Auto-Trip Started: %s\n", currentLogFileName);
-    } else {
-        isLoggingActive = false;
     }
 }
 
@@ -604,241 +413,428 @@ void stopTripLogging() {
 }
 
 // =========================================================================
-// UI Screen Renderers (5 Distinct Pages)
+// Display Power / Auto-Dimming Control
 // =========================================================================
-
-// Screen 0: Live Vehicle Dashboard
-void renderDashboard() {
-    char buf[32];
-
-    // Top RPM Bar (0 - 6000 RPM)
-    u8g2.drawFrame(0, 0, 128, 6);
-    int rpmWidth = map(constrain(vehicleData.rpm, 0, 6000), 0, 6000, 0, 124);
-    if (rpmWidth > 0) {
-        u8g2.drawBox(2, 2, rpmWidth, 2);
+void wakeScreen() {
+    lastUserActivityTime = millis();
+    if (isScreenDimmed) {
+        isScreenDimmed = false;
+        tft.setBrightness(255); // 100% full brightness
+        Serial.println("[DISPLAY] Screen Brightness Restored to 100%.");
     }
-
-    // Large Current Gear with Lockup 'L' indicator
-    u8g2.setFont(u8g2_font_logisoso22_tr);
-    if (vehicleData.tccLocked && vehicleData.gear[0] >= '1' && vehicleData.gear[0] <= '6') {
-        snprintf(buf, sizeof(buf), "%sL", vehicleData.gear);
-    } else {
-        snprintf(buf, sizeof(buf), "%s", vehicleData.gear);
-    }
-    u8g2.drawStr(2, 30, buf);
-
-    // Commanded & Actual AFR / Lambda
-    u8g2.setFont(u8g2_font_6x10_tr);
-    snprintf(buf, sizeof(buf), "Cmd:%.1f (%.2f)", vehicleData.commandedAfr, vehicleData.commandedAfr / 14.7f);
-    u8g2.drawStr(46, 18, buf);
-
-    snprintf(buf, sizeof(buf), "Act:%.1f (%.2f)", vehicleData.actualAfr, vehicleData.actualAfr / 14.7f);
-    u8g2.drawStr(46, 30, buf);
-
-    // Line 3: KCLV & KFB
-    snprintf(buf, sizeof(buf), "KCLV: %.1f", vehicleData.kclv);
-    u8g2.drawStr(0, 43, buf);
-
-    snprintf(buf, sizeof(buf), "KFB: %+2.1f\xb0", vehicleData.knockFB);
-    u8g2.drawStr(66, 43, buf);
-
-    // Line 4: Throttle % & Calculated Engine Load %
-    snprintf(buf, sizeof(buf), "Thr: %d%%", vehicleData.throttlePct);
-    u8g2.drawStr(0, 53, buf);
-
-    snprintf(buf, sizeof(buf), "Load: %d%%", vehicleData.engineLoadPct);
-    u8g2.drawStr(66, 53, buf);
-
-    // Divider Line
-    u8g2.drawHLine(0, 55, 128);
-
-    // 3-Column Footer
-    u8g2.setFont(u8g2_font_5x8_tr);
-
-    const char* logStatus = "NO SD";
-    if (isLoggingActive) {
-        logStatus = ((millis() / 500) % 2 == 0) ? "[REC]" : " REC ";
-    } else if (sdMounted) {
-        logStatus = "STBY";
-    }
-    u8g2.drawStr(0, 63, logStatus);
-
-    snprintf(buf, sizeof(buf), "%.0f msg/s", currentPPS);
-    u8g2.drawStr(44, 63, buf);
-
-    int battPct = PMU.getBatteryPercent();
-    bool chg = PMU.isCharging();
-    snprintf(buf, sizeof(buf), "%s%d%%", chg ? "+" : "", battPct >= 0 ? battPct : 0);
-    u8g2.drawStr(98, 63, buf);
 }
 
-// Screen 1: CAN Sniffer View
-void renderSniffer() {
+void dimScreen() {
+    if (!isScreenDimmed) {
+        isScreenDimmed = true;
+        tft.setBrightness(35); // Gentle 15% dim mode (fully readable)
+        Serial.println("[DISPLAY] Screen Dimmed to 15% (1 min timeout).");
+    }
+}
+
+// =========================================================================
+// Full-Color 320x240 UI Page Renderers
+// =========================================================================
+
+// Draw Top Header Bar on every page
+void drawHeaderBar(const char* title) {
+    canvas.fillRect(0, 0, 320, 24, canvas.color565(18, 18, 24));
+    
+    // Toyota Red Accent Tag
+    canvas.fillRect(0, 0, 4, 24, canvas.color565(235, 10, 30));
+    
+    // Page Title
+    canvas.setTextColor(TFT_WHITE, canvas.color565(18, 18, 24));
+    canvas.setFont(&fonts::Font2);
+    canvas.drawString(title, 10, 4);
+
+    // Status Badges (Right side)
     char buf[32];
-    u8g2.setFont(u8g2_font_6x10_tr);
+    snprintf(buf, sizeof(buf), "%.0f msg/s", currentPPS);
+    canvas.setTextColor(canvas.color565(0, 220, 255), canvas.color565(18, 18, 24));
+    canvas.drawRightString(buf, 245, 4);
 
-    snprintf(buf, sizeof(buf), "CAN: %.0f msg/s  (%lu)", currentPPS, packetCount);
-    u8g2.drawStr(0, 8, buf);
-    u8g2.drawHLine(0, 11, 128);
+    const char* sdTag = isLoggingActive ? "[REC]" : (sdMounted ? "SD:OK" : "NO SD");
+    uint16_t sdColor = isLoggingActive ? canvas.color565(255, 60, 60) : (sdMounted ? canvas.color565(80, 220, 80) : canvas.color565(120, 120, 120));
+    canvas.setTextColor(sdColor, canvas.color565(18, 18, 24));
+    canvas.drawRightString(sdTag, 315, 4);
 
+    canvas.drawFastHLine(0, 24, 320, canvas.color565(40, 40, 50));
+}
+
+// Page 0: Live Vehicle Cluster (Full 320x240 Dashboard)
+void renderDashboard() {
+    drawHeaderBar("TOYOTA TACOMA DASHBOARD");
+
+    // 1. Top RPM Tachometer Bar (0 - 6000 RPM)
+    int rpmY = 30;
+    canvas.drawRoundRect(10, rpmY, 300, 16, 4, canvas.color565(60, 60, 75));
+    int rpmWidth = map(constrain(vehicleData.rpm, 0, 6000), 0, 6000, 0, 296);
+    
+    if (rpmWidth > 0) {
+        // Gradient fill: Green -> Yellow -> Red
+        for (int i = 0; i < rpmWidth; i++) {
+            uint16_t barColor;
+            if (i < 170) {
+                barColor = canvas.color565(0, 220, 100);
+            } else if (i < 240) {
+                barColor = canvas.color565(255, 200, 0);
+            } else {
+                barColor = canvas.color565(255, 40, 40);
+            }
+            canvas.drawFastVLine(12 + i, rpmY + 2, 12, barColor);
+        }
+    }
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%d RPM", vehicleData.rpm);
+    canvas.setTextColor(TFT_WHITE);
+    canvas.setFont(&fonts::Font2);
+    canvas.drawRightString(buf, 305, rpmY + 18);
+
+    // 2. Large Gear & Lockup Box (Left Side, x=10, y=56, w=90, h=95)
+    canvas.fillRoundRect(10, 56, 90, 95, 6, canvas.color565(25, 28, 38));
+    canvas.drawRoundRect(10, 56, 90, 95, 6, canvas.color565(60, 65, 85));
+    
+    canvas.setTextColor(canvas.color565(140, 145, 165));
+    canvas.setFont(&fonts::Font0);
+    canvas.drawCenterString("GEAR", 55, 62);
+
+    canvas.setFont(&fonts::Font7); // Extra Large Font
+    if (vehicleData.tccLocked && vehicleData.gear[0] >= '1' && vehicleData.gear[0] <= '6') {
+        snprintf(buf, sizeof(buf), "%sL", vehicleData.gear);
+        canvas.setTextColor(canvas.color565(255, 215, 0)); // Gold for Lockup
+    } else {
+        snprintf(buf, sizeof(buf), "%s", vehicleData.gear);
+        canvas.setTextColor(TFT_WHITE);
+    }
+    canvas.drawCenterString(buf, 55, 78);
+
+    // TCC Lockup Badge
+    if (vehicleData.tccLocked) {
+        canvas.fillRoundRect(18, 130, 74, 16, 3, canvas.color565(200, 160, 0));
+        canvas.setTextColor(TFT_BLACK);
+        canvas.setFont(&fonts::Font2);
+        canvas.drawCenterString("LOCKED", 55, 131);
+    }
+
+    // 3. AFR & Lambda Cards (Center Column, x=110, y=56)
+    canvas.fillRoundRect(110, 56, 200, 45, 6, canvas.color565(25, 28, 38));
+    canvas.drawRoundRect(110, 56, 200, 45, 6, canvas.color565(60, 65, 85));
+
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(canvas.color565(140, 180, 255));
+    snprintf(buf, sizeof(buf), "Cmd AFR: %.1f  (%.2f \xce\xbb)", vehicleData.commandedAfr, vehicleData.commandedAfr / 14.7f);
+    canvas.drawString(buf, 118, 62);
+
+    uint16_t actAfrColor = (vehicleData.actualAfr > 15.2f) ? canvas.color565(255, 80, 80) : canvas.color565(0, 255, 180);
+    canvas.setTextColor(actAfrColor);
+    snprintf(buf, sizeof(buf), "Act AFR: %.1f  (%.2f \xce\xbb)", vehicleData.actualAfr, vehicleData.actualAfr / 14.7f);
+    canvas.drawString(buf, 118, 80);
+
+    // 4. Knock Correction & Feedback Cards (x=110, y=106)
+    canvas.fillRoundRect(110, 106, 200, 45, 6, canvas.color565(25, 28, 38));
+    canvas.drawRoundRect(110, 106, 200, 45, 6, canvas.color565(60, 65, 85));
+
+    uint16_t kclvColor = (vehicleData.kclv >= 19.0f) ? canvas.color565(80, 255, 100) : ((vehicleData.kclv >= 15.0f) ? canvas.color565(255, 200, 0) : canvas.color565(255, 60, 60));
+    canvas.setTextColor(kclvColor);
+    snprintf(buf, sizeof(buf), "KCLV: %.1f", vehicleData.kclv);
+    canvas.drawString(buf, 118, 112);
+
+    uint16_t kfbColor = (vehicleData.knockFB < 0) ? canvas.color565(255, 80, 80) : canvas.color565(0, 220, 255);
+    canvas.setTextColor(kfbColor);
+    snprintf(buf, sizeof(buf), "KFB: %+2.1f\xb0", vehicleData.knockFB);
+    canvas.drawString(buf, 215, 112);
+
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(canvas.color565(140, 140, 160));
+    canvas.drawString("Learned Knock Value (20.0 = Best)", 118, 133);
+
+    // 5. Throttle & Load Gauges (Bottom, y=160)
+    int botY = 160;
+    // Throttle % Bar
+    canvas.setTextColor(TFT_WHITE);
+    canvas.setFont(&fonts::Font2);
+    snprintf(buf, sizeof(buf), "Throttle: %d%%", vehicleData.throttlePct);
+    canvas.drawString(buf, 10, botY);
+    canvas.drawRoundRect(10, botY + 18, 145, 14, 3, canvas.color565(60, 60, 75));
+    int thrWidth = map(constrain(vehicleData.throttlePct, 0, 100), 0, 100, 0, 141);
+    if (thrWidth > 0) {
+        canvas.fillRect(12, botY + 20, thrWidth, 10, canvas.color565(0, 180, 255));
+    }
+
+    // Engine Load % Bar
+    snprintf(buf, sizeof(buf), "Engine Load: %d%%", vehicleData.engineLoadPct);
+    canvas.drawString(buf, 165, botY);
+    canvas.drawRoundRect(165, botY + 18, 145, 14, 3, canvas.color565(60, 60, 75));
+    int loadWidth = map(constrain(vehicleData.engineLoadPct, 0, 100), 0, 100, 0, 141);
+    if (loadWidth > 0) {
+        canvas.fillRect(167, botY + 20, loadWidth, 10, canvas.color565(255, 140, 0));
+    }
+
+    // Bottom Navigation Bar
+    canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
+    canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
+    canvas.setTextColor(canvas.color565(180, 180, 200));
+    canvas.setFont(&fonts::Font0);
+    canvas.drawCenterString("<< TAP OR SWIPE SCREEN TO CYCLE PAGES >>", 160, 224);
+}
+
+// Page 1: Live CAN Sniffer
+void renderSniffer() {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "CAN SNIFFER (Total: %lu)", packetCount);
+    drawHeaderBar(buf);
+
+    int rowY = 32;
     for (int i = 0; i < SNIFFER_HISTORY_SIZE; i++) {
         int idx = (snifferHead - 1 - i + SNIFFER_HISTORY_SIZE) % SNIFFER_HISTORY_SIZE;
         if (snifferHistory[idx].id == 0 && snifferHistory[idx].dlc == 0) continue;
 
-        snprintf(buf, sizeof(buf), "0x%03X:%02X%02X%02X%02X%02X",
-                 snifferHistory[idx].id,
-                 snifferHistory[idx].data[0],
-                 snifferHistory[idx].data[1],
-                 snifferHistory[idx].data[2],
-                 snifferHistory[idx].data[3],
-                 snifferHistory[idx].data[4]);
-        u8g2.drawStr(0, 24 + (i * 13), buf);
+        canvas.fillRoundRect(8, rowY, 304, 22, 4, (i % 2 == 0) ? canvas.color565(20, 22, 30) : canvas.color565(28, 30, 42));
+        
+        // CAN ID
+        snprintf(buf, sizeof(buf), "0x%03X", snifferHistory[idx].id);
+        canvas.setTextColor(canvas.color565(0, 220, 255));
+        canvas.setFont(&fonts::Font2);
+        canvas.drawString(buf, 14, rowY + 3);
+
+        // DLC
+        snprintf(buf, sizeof(buf), "[%d]", snifferHistory[idx].dlc);
+        canvas.setTextColor(canvas.color565(160, 160, 180));
+        canvas.drawString(buf, 70, rowY + 3);
+
+        // Payload Hex
+        char hexBuf[36] = "";
+        for (int b = 0; b < snifferHistory[idx].dlc && b < 8; b++) {
+            char bStr[6];
+            snprintf(bStr, sizeof(bStr), "%02X ", snifferHistory[idx].data[b]);
+            strcat(hexBuf, bStr);
+        }
+        canvas.setTextColor(TFT_WHITE);
+        canvas.drawString(hexBuf, 100, rowY + 3);
+
+        rowY += 26;
     }
+
+    // Bottom Navigation Bar
+    canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
+    canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
+    canvas.setTextColor(canvas.color565(180, 180, 200));
+    canvas.setFont(&fonts::Font0);
+    canvas.drawCenterString("<< PAGE 2/5: CAN SNIFFER >>", 160, 224);
 }
 
-// Screen 2: GPS GNSS & Compass
-void renderGPS() {
+// Page 2: Telemetry / Speed / IMU
+void renderTelemetry() {
+    drawHeaderBar("VEHICLE TELEMETRY & SPEED");
+
+    // Speedometer Box
+    canvas.fillRoundRect(10, 36, 145, 165, 6, canvas.color565(25, 28, 38));
+    canvas.drawRoundRect(10, 36, 145, 165, 6, canvas.color565(60, 65, 85));
+
+    canvas.setTextColor(canvas.color565(140, 160, 190));
+    canvas.setFont(&fonts::Font2);
+    canvas.drawCenterString("VEHICLE SPEED", 82, 46);
+
     char buf[32];
-    u8g2.setFont(u8g2_font_6x10_tr);
+    snprintf(buf, sizeof(buf), "%d", vehicleData.speedMph);
+    canvas.setFont(&fonts::Font8);
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawCenterString(buf, 82, 80);
 
-    const char* cardinals[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
-    int headingIdx = ((int)(gps.course.deg() + 22.5) % 360) / 45;
-    const char* headingCard = gps.course.isValid() ? cardinals[headingIdx] : "--";
+    canvas.setFont(&fonts::Font4);
+    canvas.setTextColor(canvas.color565(0, 220, 255));
+    canvas.drawCenterString("MPH", 82, 155);
 
-    snprintf(buf, sizeof(buf), "HDG: %03.0f\xb0 (%s)", gps.course.isValid() ? gps.course.deg() : 0.0, headingCard);
-    u8g2.drawStr(0, 9, buf);
+    // Swap Project Context Card (Right Side)
+    canvas.fillRoundRect(165, 36, 145, 165, 6, canvas.color565(25, 28, 38));
+    canvas.drawRoundRect(165, 36, 145, 165, 6, canvas.color565(60, 65, 85));
 
-    snprintf(buf, sizeof(buf), "Sats: %d | Alt: %.0fft", gps.satellites.value(), gps.altitude.feet());
-    u8g2.drawStr(0, 22, buf);
+    canvas.setTextColor(canvas.color565(255, 180, 0));
+    canvas.setFont(&fonts::Font2);
+    canvas.drawCenterString("SWAP GATEWAY", 237, 46);
 
-    snprintf(buf, sizeof(buf), "GPS Spd: %.1f MPH", gps.speed.mph());
-    u8g2.drawStr(0, 35, buf);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawString("Engine: BMW M57D30", 175, 75);
+    canvas.drawString("Trans: ZF 6HP28", 175, 95);
+    canvas.drawString("Bus: Toyota V-CAN 500k", 175, 115);
+    canvas.drawString("Bridge: ESP32-CAN-X2", 175, 135);
 
-    if (gps.location.isValid()) {
-        snprintf(buf, sizeof(buf), "Lat: %.5f", gps.location.lat());
-        u8g2.drawStr(0, 48, buf);
-        snprintf(buf, sizeof(buf), "Lon: %.5f", gps.location.lng());
-        u8g2.drawStr(0, 61, buf);
-    } else {
-        snprintf(buf, sizeof(buf), "Fix: %lu chars", gps.charsProcessed());
-        u8g2.drawStr(0, 48, buf);
-        u8g2.drawStr(0, 61, "Searching sky...");
-    }
+    canvas.setTextColor(canvas.color565(80, 220, 80));
+    canvas.drawString("* CAN Logging Active", 175, 165);
+
+    // Bottom Navigation Bar
+    canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
+    canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
+    canvas.setTextColor(canvas.color565(180, 180, 200));
+    canvas.setFont(&fonts::Font0);
+    canvas.drawCenterString("<< PAGE 3/5: TELEMETRY >>", 160, 224);
 }
 
-// Screen 3: Dedicated Power & Charger Screen
-void renderPower() {
-    char buf[32];
-    u8g2.setFont(u8g2_font_6x10_tr);
-
-    u8g2.drawStr(0, 8, "[ POWER & BATTERY ]");
-    u8g2.drawHLine(0, 10, 128);
-
-    int battPct = PMU.getBatteryPercent();
-    float battVolt = PMU.getBattVoltage() / 1000.0f;
-    bool isChg = PMU.isCharging();
-    int currentMa = 0;
-    const char* phase = getChargePhaseString(currentMa);
-    float powerWatts = battVolt * (currentMa / 1000.0f);
-
-    snprintf(buf, sizeof(buf), "Batt: %.3fV (%d%%)", battVolt, battPct >= 0 ? battPct : 0);
-    u8g2.drawStr(0, 22, buf);
-
-    snprintf(buf, sizeof(buf), "Mode: %s", phase);
-    u8g2.drawStr(0, 34, buf);
-
-    if (isChg && currentMa > 0) {
-        snprintf(buf, sizeof(buf), "Flow: +%dmA | %.2fW", currentMa, powerWatts);
-    } else {
-        snprintf(buf, sizeof(buf), "Flow: 0 mA (Idle)");
-    }
-    u8g2.drawStr(0, 46, buf);
-
-    float vbusVolt = PMU.getVbusVoltage() / 1000.0f;
-    const char* ledStr = (currentLedMode == LED_MODE_OFF) ? "OFF" : ((currentLedMode == LED_MODE_AUTO) ? "AUTO" : "BLINK");
-    snprintf(buf, sizeof(buf), "USB:%.2fV  LED:%s", vbusVolt, ledStr);
-    u8g2.drawStr(0, 58, buf);
-
-    u8g2.drawHLine(0, 60, 128);
-}
-
-// Screen 4: Dedicated Wi-Fi & SavvyCAN Streaming Screen
+// Page 3: Wi-Fi & SavvyCAN Streaming
 void renderWiFi() {
-    char buf[32];
-    u8g2.setFont(u8g2_font_6x10_tr);
+    drawHeaderBar("WI-FI SAVVYCAN STREAMING");
 
-    u8g2.drawStr(0, 8, "[ WI-FI STREAMING ]");
-    u8g2.drawHLine(0, 10, 128);
+    canvas.fillRoundRect(15, 36, 290, 165, 6, canvas.color565(25, 28, 38));
+    canvas.drawRoundRect(15, 36, 290, 165, 6, canvas.color565(60, 65, 85));
 
-    snprintf(buf, sizeof(buf), "SSID: %s", WIFI_SSID);
-    u8g2.drawStr(0, 22, buf);
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawString("Hotspot SSID:", 25, 48);
+    canvas.setTextColor(canvas.color565(0, 220, 255));
+    canvas.drawString(WIFI_SSID, 140, 48);
 
-    snprintf(buf, sizeof(buf), "Pass: %s", WIFI_PASS);
-    u8g2.drawStr(0, 33, buf);
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawString("Password:", 25, 75);
+    canvas.setTextColor(canvas.color565(255, 220, 100));
+    canvas.drawString(WIFI_PASS, 140, 75);
 
-    snprintf(buf, sizeof(buf), "IP: 192.168.4.1:%d", SAVVYCAN_PORT);
-    u8g2.drawStr(0, 44, buf);
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawString("SavvyCAN Server:", 25, 102);
+    canvas.setTextColor(canvas.color565(80, 255, 100));
+    canvas.drawString("192.168.4.1:23", 160, 102);
 
+    canvas.setTextColor(TFT_WHITE);
+    canvas.drawString("Client Status:", 25, 130);
     if (savvyClient && savvyClient.connected()) {
-        snprintf(buf, sizeof(buf), "Status: LIVE (%lu)", wifiStreamedCount);
+        canvas.setTextColor(canvas.color565(0, 255, 180));
+        char buf[32];
+        snprintf(buf, sizeof(buf), "CONNECTED (%lu pkts)", wifiStreamedCount);
+        canvas.drawString(buf, 140, 130);
     } else {
-        snprintf(buf, sizeof(buf), "Status: Waiting...");
+        canvas.setTextColor(canvas.color565(255, 160, 60));
+        canvas.drawString("Waiting for Laptop...", 140, 130);
     }
-    u8g2.drawStr(0, 56, buf);
 
-    snprintf(buf, sizeof(buf), "SD Log: %s", isLoggingActive ? "RECORDING" : (sdMounted ? "STANDBY" : "NO SD"));
-    u8g2.drawStr(0, 64, buf);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(canvas.color565(160, 160, 180));
+    canvas.drawString("Connect laptop to Wi-Fi -> In SavvyCAN add Network device (Port 23)", 25, 165);
+
+    // Bottom Navigation Bar
+    canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
+    canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
+    canvas.setTextColor(canvas.color565(180, 180, 200));
+    canvas.setFont(&fonts::Font0);
+    canvas.drawCenterString("<< PAGE 4/5: WI-FI STREAMING >>", 160, 224);
+}
+
+// Page 4: System Diagnostics
+void renderSystem() {
+    drawHeaderBar("HARDWARE DIAGNOSTICS");
+
+    canvas.fillRoundRect(15, 36, 290, 165, 6, canvas.color565(25, 28, 38));
+    canvas.drawRoundRect(15, 36, 290, 165, 6, canvas.color565(60, 65, 85));
+
+    char buf[64];
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(TFT_WHITE);
+
+    snprintf(buf, sizeof(buf), "MCU: ESP32-S3 @ %d MHz", getCpuFrequencyMhz());
+    canvas.drawString(buf, 25, 48);
+
+    snprintf(buf, sizeof(buf), "Flash: 16 MB  |  PSRAM: %d MB", ESP.getPsramSize() / (1024 * 1024));
+    canvas.drawString(buf, 25, 75);
+
+    snprintf(buf, sizeof(buf), "Free Heap: %u KB", ESP.getFreeHeap() / 1024);
+    canvas.drawString(buf, 25, 102);
+
+    snprintf(buf, sizeof(buf), "MicroSD: %s (%s)", sdMounted ? "Mounted" : "None", isLoggingActive ? "REC" : "STBY");
+    canvas.drawString(buf, 25, 130);
+
+    snprintf(buf, sizeof(buf), "CAN Pins: TX:IO%d  RX:IO%d (500k)", CAN_TX_PIN, CAN_RX_PIN);
+    canvas.drawString(buf, 25, 158);
+
+    // Bottom Navigation Bar
+    canvas.fillRect(0, 218, 320, 22, canvas.color565(15, 15, 20));
+    canvas.drawFastHLine(0, 218, 320, canvas.color565(40, 40, 50));
+    canvas.setTextColor(canvas.color565(180, 180, 200));
+    canvas.setFont(&fonts::Font0);
+    canvas.drawCenterString("<< PAGE 5/5: SYSTEM DIAGNOSTICS >>", 160, 224);
 }
 
 void updateDisplay() {
-    u8g2.clearBuffer();
+    canvas.fillScreen(canvas.color565(10, 12, 16));
 
     switch (currentScreen) {
         case SCREEN_DASHBOARD: renderDashboard(); break;
         case SCREEN_SNIFFER:   renderSniffer();   break;
-        case SCREEN_GPS:       renderGPS();       break;
-        case SCREEN_POWER:     renderPower();     break;
+        case SCREEN_TELEMETRY: renderTelemetry(); break;
         case SCREEN_WIFI:      renderWiFi();      break;
+        case SCREEN_SYSTEM:    renderSystem();    break;
         default:               renderDashboard(); break;
     }
 
-    if (millis() < ledBannerUntil) {
-        u8g2.setFont(u8g2_font_6x10_tr);
-        u8g2.drawBox(10, 20, 108, 22);
-        u8g2.setDrawColor(0);
-        u8g2.drawStr(16, 35, ledBannerText);
-        u8g2.setDrawColor(1);
-    }
-
-    u8g2.sendBuffer();
+    canvas.pushSprite(0, 0);
 }
 
 // =========================================================================
-// Main Loop & Handlers
+// Pure Toyota 3-Oval Boot Splash
 // =========================================================================
-void handleButton() {
-    int btnState = digitalRead(USER_BUTTON_PIN);
+void showToyotaBootSplash() {
+    tft.fillScreen(TFT_BLACK);
 
-    if (btnState == LOW && !buttonIsPressed) {
-        buttonIsPressed = true;
-        buttonDownTime = millis();
+    // Center of 320x240 display: (160, 105)
+    int cx = 160;
+    int cy = 105;
+
+    // Outer Large Ellipse (Toyota Red Accent)
+    for (int t = 0; t < 6; t++) {
+        tft.drawEllipse(cx, cy, 100 - t, 60 - t, tft.color565(235, 10, 30));
+    }
+
+    // Inner Top Horizontal Ellipse (White)
+    for (int t = 0; t < 4; t++) {
+        tft.drawEllipse(cx, cy - 14, 68 - t, 32 - t, TFT_WHITE);
+    }
+
+    // Inner Vertical Ellipse (White)
+    for (int t = 0; t < 4; t++) {
+        tft.drawEllipse(cx, cy, 34 - t, 56 - t, TFT_WHITE);
+    }
+
+    // Typography
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setFont(&fonts::Font4);
+    tft.drawCenterString("TOYOTA", cx, 180);
+
+    tft.setFont(&fonts::Font2);
+    tft.setTextColor(tft.color565(160, 160, 180), TFT_BLACK);
+    tft.drawCenterString("CAN BUS LOGGER & ANALYZER", cx, 212);
+
+    delay(2000); // 2 second OEM boot splash
+}
+
+// =========================================================================
+// Touch Input Handling
+// =========================================================================
+void handleTouch() {
+    uint16_t touchX, touchY;
+    bool touched = tft.getTouch(&touchX, &touchY);
+
+    if (touched) {
         wakeScreen();
-    } else if (btnState == HIGH && buttonIsPressed) {
-        buttonIsPressed = false;
-        unsigned long duration = millis() - buttonDownTime;
+        if (!wasTouched) {
+            wasTouched = true;
+            touchStartX = touchX;
+            touchStartTime = millis();
+        }
+    } else if (wasTouched) {
+        wasTouched = false;
+        unsigned long duration = millis() - touchStartTime;
 
-        if (duration >= 1000) {
-            currentLedMode = static_cast<BlueLedMode>((currentLedMode + 1) % LED_MODE_COUNT);
-            applyLedMode();
-            wakeScreen();
-        } else if (duration >= 50) {
+        if (duration < 500) {
+            // Tap / Quick Swipe to next screen
             currentScreen = static_cast<DisplayScreen>((currentScreen + 1) % SCREEN_COUNT);
-            wakeScreen();
-            Serial.printf("[UI] Switched to Screen Page %d\n", currentScreen);
+            Serial.printf("[TOUCH] Switched to Screen %d\n", currentScreen);
         }
     }
 }
 
+// =========================================================================
+// Main Loop & CAN Processing
+// =========================================================================
 void processCAN() {
     twai_message_t message;
     while (twai_receive(&message, 0) == ESP_OK) {
@@ -857,23 +853,7 @@ void processCAN() {
         recordSnifferFrame(message);
 
         if (isLoggingActive && logFile) {
-            logFile.printf("%lu,", millis());
-
-            if (gps.time.isValid()) {
-                logFile.printf("%02d:%02d:%02d.%02d,", gps.time.hour(), gps.time.minute(), gps.time.second(), gps.time.centisecond());
-            } else {
-                logFile.print("NO_FIX,");
-            }
-
-            if (gps.location.isValid()) {
-                logFile.printf("%.6f,%.6f,", gps.location.lat(), gps.location.lng());
-            } else {
-                logFile.print("0.0,0.0,");
-            }
-
-            logFile.printf("%.2f,%.1f,", gps.speed.kmph(), gps.altitude.meters());
-
-            logFile.printf("0x%03X,%d,%d,", message.identifier, message.extd, message.data_length_code);
+            logFile.printf("%lu,0x%03X,%d,%d,", millis(), message.identifier, message.extd, message.data_length_code);
             for (int i = 0; i < message.data_length_code; i++) {
                 logFile.printf("%02X", message.data[i]);
                 if (i < message.data_length_code - 1) logFile.print(" ");
@@ -892,78 +872,71 @@ void processCAN() {
     }
 }
 
-void processGPS() {
-    while (GPSSerial.available() > 0) {
-        char c = GPSSerial.read();
-        gps.encode(c);
-    }
-}
-
 void setup() {
     Serial.begin(115200);
-    pinMode(USER_BUTTON_PIN, INPUT_PULLUP);
     delay(200);
-    Serial.println("\n=== 2016 Toyota Tacoma CAN Logger (Pure Toyota Emblem Boot) ===");
+    Serial.println("\n=== Waveshare ESP32-S3-Touch-LCD-2.8 Tacoma CAN Logger ===");
 
-    shutdownLoRa();
-    initPMU();
+    // 1. Initialize Display & Backlight
+    tft.init();
+    tft.setRotation(1); // Landscape 320x240
+    tft.setBrightness(255);
+
+    // Reset touch controller
+    pinMode(TP_RST_PIN, OUTPUT);
+    digitalWrite(TP_RST_PIN, LOW);
+    delay(10);
+    digitalWrite(TP_RST_PIN, HIGH);
+    delay(50);
+
+    // Create 320x240 Canvas Sprite
+    canvas.setColorDepth(16);
+    canvas.createSprite(320, 240);
+
+    // 2. OEM Toyota Boot Splash Screen
+    showToyotaBootSplash();
+
+    // 3. Wi-Fi SoftAP & SavvyCAN Streaming Server
     initWiFiStreaming();
-    initGPS();
-    initOLED();
+
+    // 4. CAN Bus & MicroSD
     initCAN();
     mountSD();
 
-    delay(200);
+    lastUserActivityTime = millis();
 }
 
 void loop() {
-    handleButton();
+    handleTouch();
     handleWiFiClients();
     processCAN();
-    processGPS();
 
+    // Auto-Dim to 15% brightness after 60s of inactivity (stays fully visible)
     if (!isScreenDimmed && (millis() - lastUserActivityTime >= SCREEN_TIMEOUT_MS) && (millis() - lastCanActivityTime >= SCREEN_TIMEOUT_MS)) {
         dimScreen();
     }
 
+    // Periodic Toyota OBD-II active queries
     if (millis() - lastCanActivityTime < 3000 && (millis() - lastObdQueryTime >= 300)) {
         lastObdQueryTime = millis();
         sendToyotaObdQueries();
     }
 
+    // MicroSD retry
     if (!sdMounted && (millis() - lastSdRetryTime >= 5000)) {
         lastSdRetryTime = millis();
         mountSD();
     }
 
-    if (millis() - lastGpsDebugTime >= 3000) {
-        lastGpsDebugTime = millis();
-        Serial.printf("[GPS] Chars: %lu | Fix: %s | Sats: %d | Lat: %.5f | Lon: %.5f\n",
-                      gps.charsProcessed(),
-                      gps.location.isValid() ? "YES" : "NO",
-                      gps.satellites.value(),
-                      gps.location.lat(),
-                      gps.location.lng());
-    }
-
-    if (millis() - lastPowerPrintTime >= 2000) {
-        lastPowerPrintTime = millis();
-        int currentMa = 0;
-        const char* phase = getChargePhaseString(currentMa);
-        uint16_t battMv = PMU.getBattVoltage();
-        uint16_t vbusMv = PMU.getVbusVoltage();
-        float watts = (battMv / 1000.0f) * (currentMa / 1000.0f);
-        Serial.printf("[POWER] Batt: %u mV | VBUS: %u mV | Phase: %s | Current: +%d mA | Power: %.3f W | WiFi: %s\n",
-                      battMv, vbusMv, phase, currentMa, watts, wifiClientConnected ? "CLIENT CONNECTED" : "LISTENING");
-    }
-
+    // Update Message Rate calculation
     if (millis() - lastPPSCheck >= 1000) {
         currentPPS = (float)ppsCount * 1000.0f / (millis() - lastPPSCheck);
         ppsCount = 0;
         lastPPSCheck = millis();
     }
 
-    if (millis() - lastDisplayUpdate >= 150) {
+    // 30 FPS Display Refresh
+    if (millis() - lastDisplayUpdate >= 33) {
         lastDisplayUpdate = millis();
         updateDisplay();
     }
