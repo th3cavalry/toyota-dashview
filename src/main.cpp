@@ -5,10 +5,9 @@
 #include <Wire.h>
 #include "driver/twai.h"
 #include <LovyanGFX.hpp>
-#include <TouchDrv.hpp>
 
 // =========================================================================
-// Waveshare ESP32-S3-Touch-LCD-2.8 LovyanGFX Hardware Configuration
+// Waveshare ESP32-S3-Touch-LCD-2.8 V2 Hardware Configuration
 // =========================================================================
 class LGFX_Waveshare28 : public lgfx::LGFX_Device {
     lgfx::Panel_ST7789      _panel_instance;
@@ -72,7 +71,7 @@ LGFX_Waveshare28 tft;
 LGFX_Sprite canvas(&tft); // Double-buffer sprite for 60FPS flicker-free rendering
 
 // =========================================================================
-// Pin Definitions (Waveshare ESP32-S3-Touch-LCD-2.8)
+// Pin Definitions (Waveshare ESP32-S3-Touch-LCD-2.8 V2)
 // =========================================================================
 
 // Waveshare SN65HVD230 CAN Transceiver (Connected to 12-PIN Header TXD & RXD)
@@ -85,20 +84,19 @@ LGFX_Sprite canvas(&tft); // Double-buffer sprite for 60FPS flicker-free renderi
 #define SD_SCK_PIN         14
 #define SD_CS_PIN          21
 
-// Capacitive Touch I2C Pins (CST328 / CST3530 / CST816)
+// Capacitive Touch I2C Pins (Hynitron CST3530 V2 Controller)
 #define TP_SDA_PIN         1
 #define TP_SCL_PIN         3
 #define TP_INT_PIN         4
 #define TP_RST_PIN         2
+#define CST3530_I2C_ADDR   0x58
+
+const uint8_t CST3530_DATA_REG[4]     = {0xD0, 0x07, 0x00, 0x00};
+const uint8_t CST3530_END_READ_REG[4] = {0xD0, 0x00, 0x02, 0xAB};
 
 // Screen Auto-Dim Timeout (60 Seconds)
 #define SCREEN_TIMEOUT_MS          60000 
 #define CAN_INACTIVITY_TIMEOUT_MS  10000 
-
-// Touch Controller Instance
-TouchDrvCSTXXX touch;
-bool touchDriverInitialized = false;
-uint8_t touchAddress = 0x1A;
 
 // =========================================================================
 // Wi-Fi Access Point & SavvyCAN Streaming Server
@@ -426,101 +424,61 @@ void dimScreen() {
 }
 
 // =========================================================================
-// Capacitive Touch Driver (CST328 / CST3530 / CST816)
+// Native Waveshare V2 CST3530 Capacitive Touch Driver (32-bit Registers)
 // =========================================================================
-void initTouchDriver() {
+void initCst3530Touch() {
     pinMode(TP_INT_PIN, INPUT_PULLUP);
     pinMode(TP_RST_PIN, OUTPUT);
     digitalWrite(TP_RST_PIN, LOW);
-    delay(30);
+    delay(20);
     digitalWrite(TP_RST_PIN, HIGH);
     delay(100);
 
-    Wire1.begin(TP_SDA_PIN, TP_SCL_PIN, 100000);
-
-    Serial.println("[TOUCH] Scanning Wire1 (SDA:1, SCL:3) for all I2C devices...");
-    int foundCount = 0;
-    for (uint8_t addr = 1; addr < 127; addr++) {
-        Wire1.beginTransmission(addr);
-        if (Wire1.endTransmission() == 0) {
-            touchAddress = addr;
-            foundCount++;
-            Serial.printf("[TOUCH] >>> Found device on Wire1 at 0x%02X!\n", addr);
-        }
-    }
-
-    if (foundCount == 0) {
-        Serial.println("[TOUCH] No devices found on Wire1. Scanning Wire (SDA:11, SCL:10)...");
-        Wire.begin(11, 10, 100000);
-        for (uint8_t addr = 1; addr < 127; addr++) {
-            Wire.beginTransmission(addr);
-            if (Wire.endTransmission() == 0) {
-                Serial.printf("[I2C] Found device on Wire at 0x%02X!\n", addr);
-            }
-        }
-    }
-
-    touch.setPins(TP_RST_PIN, TP_INT_PIN);
-    if (touch.begin(Wire1, touchAddress, TP_SDA_PIN, TP_SCL_PIN)) {
-        touchDriverInitialized = true;
-        Serial.printf("[TOUCH] SensorLib Touch Driver Initialized! Model: %s, ChipID: 0x%X\n", 
-                      touch.getModelName(), touch.getChipID());
-        touch.disableAutoSleep();
-    } else {
-        Serial.printf("[TOUCH] SensorLib init returned false at 0x%02X, using fallback I2C parser.\n", touchAddress);
-    }
+    Wire1.begin(TP_SDA_PIN, TP_SCL_PIN, 400000);
+    Serial.println("[TOUCH] Initialized CST3530 V2 Touch Controller on Wire1 (SDA:1, SCL:3, addr:0x58)");
 }
 
-// Raw I2C Read Fallback for CST328 / CST3530
-bool readRawCstTouch(int &outX, int &outY) {
-    Wire1.beginTransmission(touchAddress);
-    Wire1.write(0xD0);
-    Wire1.write(0x00);
-    if (Wire1.endTransmission() != 0) {
+bool pollCst3530Touch(int &screenX, int &screenY) {
+    // 1. Write 4-byte 32-bit register (0xD0070000) with repeated start
+    Wire1.beginTransmission(CST3530_I2C_ADDR);
+    Wire1.write(CST3530_DATA_REG, 4);
+    if (Wire1.endTransmission(false) != 0) {
         return false;
     }
 
-    if (Wire1.requestFrom((int)touchAddress, 7) == 7) {
-        uint8_t buf[7];
-        Wire1.readBytes(buf, 7);
-        uint8_t fingerNum = buf[0] & 0x0F;
-        if (fingerNum > 0 && fingerNum <= 5) {
-            uint16_t rawX = ((buf[1] & 0x0F) << 8) | buf[2];
-            uint16_t rawY = ((buf[3] & 0x0F) << 8) | buf[4];
-            
-            // Map 240x320 native portrait to 320x240 landscape (Rotation 1)
-            outX = rawY;
-            outY = 240 - rawX;
-            if (outX < 0) outX = 0;
-            if (outX > 320) outX = 320;
-            if (outY < 0) outY = 0;
-            if (outY > 240) outY = 240;
-            return true;
-        }
+    // 2. Read 9 bytes data packet
+    if (Wire1.requestFrom((uint8_t)CST3530_I2C_ADDR, (uint8_t)9) != 9) {
+        return false;
     }
-    return false;
-}
 
-bool pollTouchCoordinates(int &screenX, int &screenY) {
-    if (touchDriverInitialized) {
-        const TouchPoints& pts = touch.getTouchPoints();
-        if (pts.hasPoints()) {
-            uint16_t rawX = pts[0].x;
-            uint16_t rawY = pts[0].y;
-            
-            // Map 240x320 native portrait to 320x240 landscape (Rotation 1)
-            screenX = rawY;
-            screenY = 240 - rawX;
-            if (screenX < 0) screenX = 0;
-            if (screenX > 320) screenX = 320;
-            if (screenY < 0) screenY = 0;
-            if (screenY > 240) screenY = 240;
-            return true;
-        }
+    uint8_t buf[9];
+    Wire1.readBytes(buf, 9);
+
+    // 3. Write 4-byte ACK / end-of-read register (0xD00002AB) to release IRQ
+    Wire1.beginTransmission(CST3530_I2C_ADDR);
+    Wire1.write(CST3530_END_READ_REG, 4);
+    Wire1.endTransmission(true);
+
+    // 4. Validate touch condition: count > 0 AND high nibble of buf[8] != 0
+    uint8_t count = buf[3] & 0x0F;
+    if (count == 0 || (buf[8] & 0xF0) == 0x00) {
+        return false;
     }
-    
-    // Fallback to direct I2C read
-    return readRawCstTouch(screenX, screenY);
+
+    // 5. Decode 12-bit touch point coordinates
+    uint16_t rawX = ((uint16_t)(buf[7] & 0x0F) << 8) | buf[4];
+    uint16_t rawY = ((uint16_t)(buf[7] & 0xF0) << 4) | buf[5];
+
+    // 6. Map native 240x320 portrait to 320x240 landscape (Rotation 1)
+    screenX = rawY;
+    screenY = 240 - rawX;
+
+    if (screenX < 0) screenX = 0;
+    if (screenX > 320) screenX = 320;
+    if (screenY < 0) screenY = 0;
+    if (screenY > 240) screenY = 240;
+
+    return true;
 }
 
 // =========================================================================
@@ -884,7 +842,7 @@ void prevScreen() {
 // =========================================================================
 void handleTouch() {
     int touchX = 0, touchY = 0;
-    bool touched = pollTouchCoordinates(touchX, touchY);
+    bool touched = pollCst3530Touch(touchX, touchY);
 
     if (touched) {
         wakeScreen();
@@ -893,9 +851,9 @@ void handleTouch() {
             touchStartX = touchX;
             touchStartY = touchY;
             touchLastX  = touchX;
-            touchLastY  = touchLastY;
+            touchLastY  = touchY;
             touchStartTime = millis();
-            Serial.printf("[TOUCH] Press at (%d, %d)\n", touchX, touchY);
+            Serial.printf("[TOUCH V2] Press at (%d, %d)\n", touchX, touchY);
         } else {
             touchLastX = touchX;
             touchLastY = touchY;
@@ -906,19 +864,19 @@ void handleTouch() {
         int deltaY = touchLastY - touchStartY;
         unsigned long duration = millis() - touchStartTime;
 
-        Serial.printf("[TOUCH] Release at (%d, %d) | deltaX=%d, deltaY=%d, dur=%lums\n", 
+        Serial.printf("[TOUCH V2] Release at (%d, %d) | deltaX=%d, deltaY=%d, dur=%lums\n", 
                       touchLastX, touchLastY, deltaX, deltaY, duration);
 
-        // 1. Horizontal Swipe Gesture (Drag > 25px in < 900ms)
-        if (abs(deltaX) >= 25 && duration < 900) {
-            if (deltaX < -25) {
+        // 1. Horizontal Swipe Gesture (Drag > 20px in < 1000ms)
+        if (abs(deltaX) >= 20 && duration < 1000) {
+            if (deltaX < -20) {
                 nextScreen(); // Drag right-to-left -> Next Page
-            } else if (deltaX > 25) {
+            } else if (deltaX > 20) {
                 prevScreen(); // Drag left-to-right -> Prev Page
             }
         } 
         // 2. Direct Tap Detection
-        else if (duration < 400 && abs(deltaX) < 25 && abs(deltaY) < 25) {
+        else if (duration < 450 && abs(deltaX) < 20 && abs(deltaY) < 20) {
             if (touchLastX > 160) {
                 nextScreen(); // Tap Right Half -> Next Page
             } else {
@@ -971,7 +929,7 @@ void processCAN() {
 void setup() {
     Serial.begin(115200);
     delay(200);
-    Serial.println("\n=== Waveshare ESP32-S3-Touch-LCD-2.8 Tacoma CAN Logger ===");
+    Serial.println("\n=== Waveshare ESP32-S3-Touch-LCD-2.8 V2 Tacoma CAN Logger ===");
 
     // 1. Initialize Display & Backlight
     tft.init();
@@ -985,8 +943,8 @@ void setup() {
     // 2. OEM Toyota Boot Splash Screen
     showToyotaBootSplash();
 
-    // 3. Capacitive Touch Controller (CST328 / CST3530)
-    initTouchDriver();
+    // 3. Capacitive Touch Controller (Native CST3530 V2 Driver)
+    initCst3530Touch();
 
     // 4. Wi-Fi SoftAP & SavvyCAN Streaming Server
     initWiFiStreaming();
