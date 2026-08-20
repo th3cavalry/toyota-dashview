@@ -778,12 +778,12 @@ void renderDashboard() {
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(canvas.color565(160, 190, 240));
-    snprintf(buf, sizeof(buf), "Cmd AFR: %.1f (%.2f \xce\xbb)", vehicleData.commandedAfr, vehicleData.commandedAfr / 14.7f);
+    snprintf(buf, sizeof(buf), "Cmd AFR: %.1f (%.2f L)", vehicleData.commandedAfr, vehicleData.commandedAfr / 14.7f);
     canvas.drawString(buf, 116, 65);
 
     uint16_t actAfrColor = (vehicleData.actualAfr > 15.2f) ? C_TRD_RED : ((vehicleData.actualAfr < 12.0f) ? C_TRD_ORANGE : C_GREEN_OK);
     canvas.setTextColor(actAfrColor);
-    snprintf(buf, sizeof(buf), "Act AFR: %.1f (%.2f \xce\xbb)", vehicleData.actualAfr, vehicleData.actualAfr / 14.7f);
+    snprintf(buf, sizeof(buf), "Act AFR: %.1f (%.2f L)", vehicleData.actualAfr, vehicleData.actualAfr / 14.7f);
     canvas.drawString(buf, 116, 83);
 
     // 4. Knock Health (KCLV & KFB) Card (Bottom Right)
@@ -798,8 +798,8 @@ void renderDashboard() {
 
     uint16_t kfbColor = (vehicleData.knockFB < 0) ? C_TRD_RED : C_TEXT_CYAN;
     canvas.setTextColor(kfbColor);
-    snprintf(buf, sizeof(buf), "KFB: %+2.1f\xb0", vehicleData.knockFB);
-    canvas.drawString(buf, 218, 113);
+    snprintf(buf, sizeof(buf), "KFB: %+2.1f deg", vehicleData.knockFB);
+    canvas.drawString(buf, 214, 113);
 
     canvas.setFont(&fonts::Font0);
     canvas.setTextColor(C_TEXT_MUTED);
