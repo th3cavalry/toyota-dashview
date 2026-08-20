@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include "driver/twai.h"
 #include <LovyanGFX.hpp>
+#include "toyota_splash.h"
 
 // =========================================================================
 // Waveshare ESP32-S3-Touch-LCD-2.8 V2 Hardware Configuration
@@ -1044,35 +1045,13 @@ void updateDisplay() {
 }
 
 // =========================================================================
-// Pure Toyota 3-Oval Boot Splash
+// Photorealistic 3D Chrome Toyota Boot Splash
 // =========================================================================
 void showToyotaBootSplash() {
-    tft.fillScreen(TFT_BLACK);
-
-    int cx = 160;
-    int cy = 105;
-
-    for (int t = 0; t < 6; t++) {
-        tft.drawEllipse(cx, cy, 100 - t, 60 - t, tft.color565(235, 10, 30));
-    }
-
-    for (int t = 0; t < 4; t++) {
-        tft.drawEllipse(cx, cy - 14, 68 - t, 32 - t, TFT_WHITE);
-    }
-
-    for (int t = 0; t < 4; t++) {
-        tft.drawEllipse(cx, cy, 34 - t, 56 - t, TFT_WHITE);
-    }
-
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setFont(&fonts::Font4);
-    tft.drawCenterString("TOYOTA", cx, 180);
-
-    tft.setFont(&fonts::Font2);
-    tft.setTextColor(tft.color565(160, 160, 180), TFT_BLACK);
-    tft.drawCenterString("CAN BUS LOGGER & ANALYZER", cx, 212);
-
-    delay(2000);
+    tft.startWrite();
+    tft.pushImage(0, 0, 320, 240, toyota_splash_320x240);
+    tft.endWrite();
+    delay(2200);
 }
 
 // =========================================================================
