@@ -171,6 +171,7 @@ SPIClass sdSPI(HSPI);
 File activeLogFile;
 bool sdMounted = false;
 unsigned long packetCount = 0;
+unsigned long rxOverflowCount = 0; // frames dropped due to RX queue overrun
 unsigned long lastCanActivityTime = 0;
 unsigned long lastSdRetryTime = 0;
 unsigned long lastObdQueryTime = 0;
@@ -302,6 +303,9 @@ void handleWiFiClients() {
 // =========================================================================
 // CAN Driver Initialization & Toyota OBD Queries
 // =========================================================================
+#define OBD_REQUEST_ID  0x7E0
+#define OBD_RESPONSE_ID 0x7E8
+
 void initCAN() {
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
@@ -314,10 +318,27 @@ void initCAN() {
         return;
     }
 
+    // Alert on RX FIFO overrun and bus-off so processCAN() can react instead of
+    // silently dropping frames (shorted tap -> bus-off was previously permanent).
+    uint32_t alerts = TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_BUS_OFF | TWAI_ALERT_ERR_PASS;
+    twai_reconfigure_alerts(alerts, nullptr);
+
     if (twai_start() == ESP_OK) {
         Serial.println("[CAN] TWAI started successfully.");
     } else {
         Serial.println("[CAN] Failed to start TWAI.");
+    }
+}
+
+// Restart the TWAI peripheral after a bus-off (recovery requires stop/start).
+void tryCanRecovery() {
+    Serial.println("[CAN] Bus-off detected -> attempting TWAI recovery...");
+    twai_stop();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    if (twai_start() == ESP_OK) {
+        Serial.println("[CAN] TWAI restarted after bus-off.");
+    } else {
+        Serial.println("[CAN] TWAI restart failed (wiring/termination?).");
     }
 }
 
@@ -352,7 +373,7 @@ void sendToyotaObdQueries() {
     obdQueryIndex = obdQueryIndex % queryCount;
 
     twai_message_t queryMsg;
-    queryMsg.identifier = 0x7E0;
+    queryMsg.identifier = OBD_REQUEST_ID;
     queryMsg.extd = 0;
     queryMsg.rtr = 0;
     queryMsg.data_length_code = 8;
@@ -366,8 +387,127 @@ void sendToyotaObdQueries() {
     obdQueryIndex = (obdQueryIndex + 1) % queryCount;
 }
 
+// =========================================================================
+// ISO-TP (ISO 15765-2) Reassembly for OBD Responses (0x7E8 -> 0x7E0)
+// Toyota Mode $21 responses (e.g. 21 A2 KCLV/KFB) are frequently multi-frame:
+// a First Frame must be answered with a Flow Control CTS from 0x7E0, then
+// Consecutive Frames are concatenated until the FF length is satisfied.
+// =========================================================================
+uint8_t  isotpBuf[64];
+uint16_t isotpTotal = 0;     // payload bytes announced by First Frame
+uint16_t isotpReceived = 0;  // bytes accumulated so far
+bool     isotpActive = false;
+uint8_t  isotpNextSeq = 1;   // expected CF sequence nibble (wraps after 0)
+unsigned long isotpStartedAt = 0;
+
+void sendIsotpFlowControl() {
+    twai_message_t fc = {};
+    fc.identifier = OBD_REQUEST_ID;
+    fc.extd = 0;
+    fc.rtr = 0;
+    fc.data_length_code = 8;
+    memset(fc.data, 0, 8);
+    fc.data[0] = 0x30; // Flow Control, Continue To Send
+    fc.data[1] = 0x00; // BS = 0 (block size unlimited)
+    fc.data[2] = 0x00; // STmin = 0
+    twai_transmit(&fc, 0);
+}
+
+// Decode a complete OBD payload: p[0]=mode(+0x40), p[1]=PID, p[2..]=data bytes
+void decodeObdPayload(const uint8_t* p, uint16_t len) {
+    if (len < 2) return;
+    if (p[0] == 0x61 && p[1] == 0xA2 && len >= 4) {
+        float rawKclv = p[2] * 0.1f;
+        if (rawKclv >= 10.0f && rawKclv <= 30.0f) {
+            vehicleData.kclv = rawKclv;
+        }
+        vehicleData.knockFB = (int8_t)p[3] * 0.1f;
+    }
+    else if (p[0] == 0x41) {
+        if (p[1] == 0x04 && len >= 3) {
+            vehicleData.engineLoadPct = (p[2] * 100) / 255;
+        }
+        else if (p[1] == 0x05 && len >= 3) {
+            vehicleData.coolantTempC = (int)p[2] - 40;
+        }
+        else if (p[1] == 0x0F && len >= 3) {
+            vehicleData.iatC = (int)p[2] - 40;
+        }
+        else if (p[1] == 0x10 && len >= 4) {
+            vehicleData.mafGps = ((p[2] << 8) | p[3]) / 100.0f;
+        }
+        else if (p[1] == 0x0E && len >= 3) {
+            vehicleData.timingDeg = ((float)p[2] / 2.0f) - 64.0f;
+        }
+        else if (p[1] == 0x24 && len >= 4) {
+            float lambda = (float)((p[2] << 8) | p[3]) / 32768.0f;
+            if (lambda > 0.5f && lambda < 2.0f) {
+                vehicleData.actualAfr = lambda * 14.7f;
+            }
+        }
+        else if (p[1] == 0x44 && len >= 4) {
+            float lambdaCmd = (float)((p[2] << 8) | p[3]) / 32768.0f;
+            if (lambdaCmd > 0.5f && lambdaCmd < 2.0f) {
+                vehicleData.commandedAfr = lambdaCmd * 14.7f;
+            }
+        }
+    }
+}
+
+// ISO-TP state machine for 0x7E8 frames. Returns true when the frame is consumed.
+bool handleObdIsoTp(const twai_message_t &msg) {
+    uint8_t pciType = msg.data[0] >> 4;
+
+    if (pciType == 0x0) { // Single Frame
+        uint8_t len = msg.data[0] & 0x0F;
+        isotpActive = false;
+        if (len > 0 && len <= msg.data_length_code - 1) {
+            decodeObdPayload(&msg.data[1], len);
+        }
+        return true;
+    }
+    if (pciType == 0x1) { // First Frame
+        isotpTotal = ((uint16_t)(msg.data[0] & 0x0F) << 8) | msg.data[1];
+        if (isotpTotal == 0 || isotpTotal > sizeof(isotpBuf)) {
+            isotpActive = false;
+            return true;
+        }
+        memcpy(isotpBuf, &msg.data[2], msg.data_length_code - 2);
+        isotpReceived = msg.data_length_code - 2;
+        isotpNextSeq = 1;
+        isotpActive = true;
+        isotpStartedAt = millis();
+        sendIsotpFlowControl();
+        return true;
+    }
+    if (pciType == 0x2 && isotpActive) { // Consecutive Frame
+        // Drop stale sessions (>1 s) and out-of-order CFs
+        if (millis() - isotpStartedAt > 1000 || (msg.data[0] & 0x0F) != isotpNextSeq) {
+            isotpActive = false;
+            return true;
+        }
+        uint16_t chunk = msg.data_length_code - 1;
+        if (isotpReceived + chunk > isotpTotal) chunk = isotpTotal - isotpReceived;
+        memcpy(&isotpBuf[isotpReceived], &msg.data[1], chunk);
+        isotpReceived += chunk;
+        isotpNextSeq = (isotpNextSeq + 1) & 0x0F;
+        if (isotpReceived >= isotpTotal) {
+            isotpActive = false;
+            decodeObdPayload(isotpBuf, isotpTotal);
+        }
+        return true;
+    }
+    return false;
+}
+
 void decodeTacomaFrame(const twai_message_t &msg) {
+    if (msg.identifier == OBD_RESPONSE_ID && msg.data_length_code >= 1) {
+        handleObdIsoTp(msg);
+    }
     if (msg.identifier == 0x0B4 && msg.data_length_code >= 8) {
+        // NOTE: scale factor unverified against the Toyota signal spec (0x0B4
+        // wheel-speed messages are commonly 0.05625/0.0625 km/h per bit).
+        // Calibrate against a known-speed log before trusting this reading.
         uint16_t rawSpeed = (msg.data[5] << 8) | msg.data[6];
         vehicleData.speedMph = (rawSpeed * 0.621371f) / 100.0f;
     }
@@ -394,47 +534,6 @@ void decodeTacomaFrame(const twai_message_t &msg) {
         vehicleData.rpm = ((msg.data[0] << 8) | msg.data[1]) / 4;
         vehicleData.throttlePct = (msg.data[4] * 100) / 255;
         vehicleData.engineLoadPct = (msg.data[2] * 100) / 255;
-    }
-    else if (msg.identifier == 0x7E8 && msg.data_length_code >= 4) {
-        if (msg.data[1] == 0x61 && msg.data[2] == 0xA2 && msg.data_length_code >= 6) {
-            float rawKclv = msg.data[3] * 0.1f;
-            if (rawKclv >= 10.0f && rawKclv <= 30.0f) {
-                vehicleData.kclv = rawKclv;
-            }
-            int8_t rawKnock = (int8_t)msg.data[4];
-            vehicleData.knockFB = rawKnock * 0.1f;
-        }
-        else if (msg.data[1] == 0x41) {
-            if (msg.data[2] == 0x04 && msg.data_length_code >= 4) {
-                vehicleData.engineLoadPct = (msg.data[3] * 100) / 255;
-            }
-            else if (msg.data[2] == 0x05 && msg.data_length_code >= 4) {
-                vehicleData.coolantTempC = (int)msg.data[3] - 40;
-            }
-            else if (msg.data[2] == 0x0F && msg.data_length_code >= 4) {
-                vehicleData.iatC = (int)msg.data[3] - 40;
-            }
-            else if (msg.data[2] == 0x10 && msg.data_length_code >= 5) {
-                vehicleData.mafGps = ((msg.data[3] << 8) | msg.data[4]) / 100.0f;
-            }
-            else if (msg.data[2] == 0x0E && msg.data_length_code >= 4) {
-                vehicleData.timingDeg = ((float)msg.data[3] / 2.0f) - 64.0f;
-            }
-            else if (msg.data[2] == 0x24 && msg.data_length_code >= 6) {
-                uint16_t rawLambda = (msg.data[3] << 8) | msg.data[4];
-                float lambda = (float)rawLambda / 32768.0f;
-                if (lambda > 0.5f && lambda < 2.0f) {
-                    vehicleData.actualAfr = lambda * 14.7f;
-                }
-            }
-            else if (msg.data[2] == 0x44 && msg.data_length_code >= 5) {
-                uint16_t rawCmd = (msg.data[3] << 8) | msg.data[4];
-                float lambdaCmd = (float)rawCmd / 32768.0f;
-                if (lambdaCmd > 0.5f && lambdaCmd < 2.0f) {
-                    vehicleData.commandedAfr = lambdaCmd * 14.7f;
-                }
-            }
-        }
     }
 }
 
@@ -469,14 +568,20 @@ String generateUniqueFileName(const char* prefix) {
         return "";
     }
     char filename[36];
-    for (int i = 1; i <= 9999; i++) {
-        snprintf(filename, sizeof(filename), "/%s_%04d.csv", prefix, i);
-        if (!SD.exists(filename)) {
-            return String(filename);
-        }
+    // Counter lives in NVS: stat()-ing up to 9999 candidate names froze the UI
+    // for seconds on cards holding thousands of old logs.
+    preferences.begin("dashview", false);
+    uint16_t nextIdx = preferences.getUShort(prefix, 1);
+    String path;
+    for (int attempt = 0; attempt < 50; attempt++) {
+        snprintf(filename, sizeof(filename), "/%s_%04d.csv", prefix, nextIdx);
+        if (!SD.exists(filename)) break;
+        nextIdx++;
     }
-    snprintf(filename, sizeof(filename), "/%s_%lu.csv", prefix, millis() / 1000);
-    return String(filename);
+    preferences.putUShort(prefix, nextIdx + 1);
+    preferences.end();
+    path = String(filename);
+    return path;
 }
 
 // Count active PIDs
@@ -1605,8 +1710,22 @@ void handleTouch() {
 // Main Loop & CAN Processing
 // =========================================================================
 void processCAN() {
+    // Non-blocking alert check: react to bus-off and note RX overruns instead
+    // of silently losing frames when TCP/SD backpressure slows the drain.
+    uint32_t alerts = 0;
+    if (twai_read_alerts(&alerts, 0) == ESP_OK && alerts) {
+        if (alerts & TWAI_ALERT_BUS_OFF) tryCanRecovery();
+        if (alerts & TWAI_ALERT_RX_QUEUE_FULL) {
+            rxOverflowCount++;
+            Serial.println("[CAN] RX queue full - frames dropped!");
+        }
+    }
+
     twai_message_t message;
-    while (twai_receive(&message, 0) == ESP_OK) {
+    int drained = 0;
+    // Bound the drain per loop pass: each frame can block on a TCP write or an
+    // SD printf, and an unbounded loop starves touch/UI under full bus load.
+    while (drained++ < 64 && twai_receive(&message, 0) == ESP_OK) {
         packetCount++;
         ppsCount++;
         lastCanActivityTime = millis();
