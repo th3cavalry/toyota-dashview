@@ -1,89 +1,68 @@
 # Toyota DashView 🚙📊
 
-**Toyota DashView** is an open-source, in-cabin automotive digital gauge cluster, high-speed PID datalogger, raw CAN bus analyzer, and wireless SavvyCAN streamer designed for 3rd Gen Toyota Tacomas (2016–2023) and Toyota CAN vehicles.
+**Toyota DashView** is an open-source, in-cabin automotive digital gauge cluster, PID datalogger, raw CAN bus analyzer, and wireless SavvyCAN streamer for 3rd-gen Toyota Tacoma (2016–2023) and other Toyota CAN vehicles.
 
-Originally developed to reverse-engineer and map the factory Toyota 500 kbps CAN bus system for a **BMW M57 3.0L Twin-Turbo Diesel + ZF 6HP28 Transmission swap** using an **ESP32-CAN-X2** dual-channel translator gateway.
+Originally developed to reverse-engineer and map the factory Toyota 500 kbps CAN bus for a **BMW M57 3.0L Twin-Turbo Diesel + ZF 6HP28 swap**, and used daily as a tuning companion on a supercharged 2GR-FKS build.
 
----
+## Hardware (current build)
+
+**Waveshare ESP32-S3-Touch-LCD-2.8 V2** (320×240 ST7789 IPS, CST3530 capacitive touch) + external **SN65HVD230** CAN transceiver on the 12-pin header.
+
+> 🚚 Migrating to the **Waveshare ESP32-S3-Touch-LCD-4.3B** (800×480 RGB, *onboard* CAN + RS485 + RTC + 7–36V input) — see issue #1 for the port plan. The `waveshare-touch-28` PlatformIO env stays supported meanwhile.
 
 ## Features
 
-* **5 Dedicated OLED Pages (1.3" SH1106 Display)**:
-  * **Screen 0 (Dashboard)**: Real-time RPM bar, Large Current Gear with Torque Converter Lockup (`6L`), Commanded & Actual AFR/Lambda, Toyota Learned & Live Knock (`KCLV` / `KFB`), Throttle %, Calculated Engine Load %, and 3-column status footer.
-  * **Screen 1 (CAN Sniffer)**: Live message rate (`msg/s`), total packets, and rolling raw hex packet buffer.
-  * **Screen 2 (GPS GNSS & Compass)**: Latitude/Longitude, Heading & Cardinal direction, Satellites in view, Altitude, and GPS Speed in MPH.
-  * **Screen 3 (Power & Charger)**: Battery voltage, 18650 charge state (`TRICKLE`, `PRE-CHG`, `FAST-CC 1.0A`, `TAPER-CV`, `DONE`), mA current flow, power in Watts, and USB VBUS voltage.
-  * **Screen 4 (Wi-Fi Streaming)**: SoftAP status, IP address, connected clients, and live stream packet count.
-* **Wireless SavvyCAN Streaming (GVRET over Wi-Fi)**:
-  * Broadcasts a dedicated Wi-Fi Access Point (`Tacoma-CAN-Logger`).
-  * Runs a TCP GVRET streaming server on Port `23` for real-time, cable-free packet sniffing in **SavvyCAN**.
-* **Pure MicroSD CSV Logging**:
-  * Automatically creates geostamped CSV trip logs (`/tac_YYYYMMDD_HHMMSS.csv`) upon detecting CAN traffic.
-  * Captures timestamp, GPS time, Lat/Lon, GPS speed, altitude, raw standard/extended CAN IDs, DLC, and payload bytes.
-* **OEM Toyota Boot Splash**:
-  * Centered 72x42 monochrome 1-bit Toyota 3-Oval emblem displayed on boot.
-* **Auto-Dimming Power Management**:
-  * Dims display brightness down after 60 seconds of inactivity without turning off, instantly waking upon button press or CAN bus activity.
-* **LoRa Hardware Shutdown**:
-  * SX1262 LoRa radio is held in permanent hardware reset/sleep, allowing safe removal of the bulky 915MHz antenna.
-* **18650 Battery Management (AXP2101 PMIC)**:
-  * JEITA and TS thermal throttling disabled for unmonitored standard 18650 cells.
-  * Blue charging LED control (Long press `BOOT` button to toggle `OFF` $\rightarrow$ `AUTO` $\rightarrow$ `BLINK`).
+* **6 swipeable 320×240 pages** (TRD dark-motorsport UI, 30 fps double-buffered):
+  * **Cluster** — RPM bar with redline bands, gear + TCC lockup (`6L`), Commanded/Actual AFR + lambda, KCLV/KFB knock health, throttle %, engine load %.
+  * **CAN Sniffer** — live msg/s, frame totals, raw-frame logger to SD, and a floating raw-packet terminal modal (pause / clear / inspect).
+  * **PID Datalogger** — 10 Hz selected-PID CSV logging with an interactive PID picker (ALL/NONE presets).
+  * **Wi-Fi Streaming** — SoftAP status + live stream counter.
+  * **System** — firmware version, heap, PSRAM, SD and CAN interface health.
+  * **Settings** — 180° display flip, 4-step backlight, reboot (persisted to NVS flash).
+* **Toyota-aware decode**: passive `0x0B4` (speed), `0x3BC` (gear/TCC), `0x2C4` (RPM/throttle/load) + active OBD-II queries on `0x7E0`/`0x7E8` incl. Toyota Mode $21 `A2` (KCLV/KFB), with ISO 15765-2 multi-frame reassembly.
+* **Wireless SavvyCAN streaming (GVRET)**: join the AP, connect SavvyCAN to `192.168.4.1:23` (one client at a time).
+* **Pure MicroSD CSV logging**: `canbus_XXXX.csv` raw frames (ID/ext/DLC/hex payload) or `datalog_XXXX.csv` decoded PIDs — mutually exclusive sessions, unique filenames, periodic flush.
+* **Boot splash** until first tap or engine start (RPM > 0), then straight to the cluster.
+* **Auto-dim** backlight after 60 s idle; instant wake on touch or CAN traffic.
 
----
+## Wiring (SN65HVD230 ↔ board ↔ truck)
 
-## Hardware Pinout & Wiring
-
-### 1. LilyGO T-Beam Supreme $\longleftrightarrow$ Waveshare SN65HVD230
-
-| LilyGO Header Pin (Label) | Waveshare CAN Board Pin | Description |
+| SN65HVD230 | ESP32-S3 (2.8 V2) | Signal |
 | :--- | :--- | :--- |
-| **`dc1`** *(or `bldd2`)* | **`3V3` / `VCC`** | 3.3V Regulated Power from PMU |
-| **`gnd`** | **`GND`** | Ground |
-| **`io2`** | **`CTX` / `TXD`** | ESP32-S3 TWAI CAN Transmit (TX) |
-| **`io3`** | **`CRX` / `RXD`** | ESP32-S3 TWAI CAN Receive (RX) |
+| `TXD` | GPIO43 | TWAI TX |
+| `RXD` | GPIO44 | TWAI RX |
+| `VCC` | 3V3 | 3.3 V |
+| `GND` | GND | Ground |
 
-### 2. Waveshare SN65HVD230 $\longleftrightarrow$ 2016 Tacoma CAN Bus
-
-Connect either to the **CAN Junction Block behind the steering wheel** or to the **OBD-II Port**:
-
-| Waveshare Screw Terminal | Tacoma CAN Junction Block | OBD-II Port | Signal |
+| SN65HVD230 | Tacoma CAN Junction Block | OBD-II | Signal |
 | :--- | :--- | :--- | :--- |
-| **`CAN_H`** | **White** wire | **Pin 6** | HS-CAN High (500 kbps) |
-| **`CAN_L`** | **Black** wire | **Pin 14** | HS-CAN Low (500 kbps) |
-| **`GND`** | Chassis Ground Bolt | **Pin 4 or 5** | Ground |
+| `CAN_H` | White wire | Pin 6 | HS-CAN High (500 kbps) |
+| `CAN_L` | Black wire | Pin 14 | HS-CAN Low |
+| `GND` | Chassis bolt | Pin 4/5 | Ground |
 
-> **Note**: For mid-bus junction block taps, remove the `120R` / `R_EN` termination jumper on the Waveshare board so it acts as a high-impedance listening tap.
+> For mid-bus taps, remove the 120 Ω termination jumper on the transceiver board.
 
----
+## SavvyCAN over Wi-Fi
 
-## Wi-Fi & SavvyCAN Configuration
+1. Join SSID **`Toyota-DashView`** (password on the device's Wi-Fi page).
+2. SavvyCAN → *Connection* → *New Connection* → **Network (GVRET)** → `192.168.4.1`, port `23`.
 
-1. Connect your laptop to the Wi-Fi network:
-   * **SSID**: `Tacoma-CAN-Logger`
-   * **Password**: `tacoma123`
-2. Open **SavvyCAN** (`/usr/bin/SavvyCAN`).
-3. Navigate to **`Connection` $\longrightarrow$ `Open Connection Window` $\longrightarrow$ `Add New Device Connection`**.
-4. Select **`Network Connection`** (or `TCP/IP` / `GVRET-WiFi`):
-   * **IP Address**: `192.168.4.1`
-   * **Port**: `23`
-5. Click **Connect**. Live CAN packets will stream directly into SavvyCAN.
-
----
+⚠️ The AP uses a fixed default passphrase and streams live CAN frames — treat it as a bench/vehicle-service network, not internet-connected.
 
 ## Build & Flash (PlatformIO)
 
 ```bash
-# Clone the repository
-git clone git@github.com:th3cavalry/tacoma-can-logger.git
-cd tacoma-can-logger
-
-# Build and upload firmware
-pio run --target upload
+git clone https://github.com/th3cavalry/toyota-dashview.git
+cd toyota-dashview
+pio run -e waveshare-touch-28 --target upload
 ```
 
----
+SD cards should be FAT32 (`./format_sd.sh /dev/sdX`).
+
+## Disclaimer
+
+Designed for automotive diagnostic research and custom powertrain swaps. Tap your own CAN bus at your own risk; verify every decode against a known-good reference before trusting it on the road.
 
 ## License
 
-MIT License. Designed for automotive diagnostic research and custom powertrain engine swaps.
+MIT — see [LICENSE](LICENSE).
