@@ -996,67 +996,76 @@ bool pollTouch(int &screenX, int &screenY) {
 #define C_GOLD_LOCK     canvas.color565(255, 205, 0)   // TCC Lock Gold
 
 // =========================================================================
-// Full-Color 320x240 UI Page Renderers (TRD Motorsport Dark Edition)
+// 800x480 UI Layout Constants (Waveshare 4.3B)
+// =========================================================================
+#define UI_W 800
+#define UI_H 480
+#define UI_HEADER_H 44
+#define UI_NAVBAR_H 40
+#define UI_CONTENT_W (UI_W - 24)   // side margin 12+12
+
+// Full-Color 800x480 UI Page Renderers (TRD Motorsport Dark Edition)
 // =========================================================================
 
 void drawHeaderBar(const char* title) {
     // Deep dark header bar
-    canvas.fillRect(0, 0, 320, 24, canvas.color565(14, 16, 22));
-    
+    canvas.fillRect(0, 0, UI_W, UI_HEADER_H, canvas.color565(14, 16, 22));
+
     // TRD Heritage Tri-Color Mini Stripes (Top Left)
-    canvas.fillRect(0, 0, 5, 24, C_TRD_ORANGE);
-    canvas.fillRect(5, 0, 5, 24, C_TRD_RED);
-    canvas.fillRect(10, 0, 5, 24, C_TRD_BURGUNDY);
+    canvas.fillRect(0, 0, 6, UI_HEADER_H, C_TRD_ORANGE);
+    canvas.fillRect(6, 0, 6, UI_HEADER_H, C_TRD_RED);
+    canvas.fillRect(12, 0, 6, UI_HEADER_H, C_TRD_BURGUNDY);
 
     // Screen Title
     canvas.setTextColor(C_TEXT_WHITE, canvas.color565(14, 16, 22));
-    canvas.setFont(&fonts::Font2);
-    canvas.drawString(title, 22, 4);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawString(title, 30, 10);
 
     // Live Message Rate
     char buf[32];
     snprintf(buf, sizeof(buf), "%.0f msg/s", currentPPS);
     canvas.setTextColor(C_TEXT_CYAN, canvas.color565(14, 16, 22));
-    canvas.drawRightString(buf, 242, 4);
+    canvas.setFont(&fonts::Font2);
+    canvas.drawRightString(buf, 668, 14);
 
     // SD / REC Status Pill
     if (currentLogMode != LOG_IDLE) {
         bool blink = ((millis() / 500) % 2 == 0);
-        canvas.fillRoundRect(248, 3, 68, 18, 3, blink ? C_TRD_RED : canvas.color565(80, 10, 15));
+        canvas.fillRoundRect(680, 8, 108, 28, 4, blink ? C_TRD_RED : canvas.color565(80, 10, 15));
         canvas.setTextColor(C_TEXT_WHITE);
-        canvas.setFont(&fonts::Font0);
-        canvas.drawCenterString((currentLogMode == LOG_CANBUS) ? "CAN REC" : "PID REC", 282, 7);
+        canvas.setFont(&fonts::Font2);
+        canvas.drawCenterString((currentLogMode == LOG_CANBUS) ? "CAN REC" : "PID REC", 734, 14);
     } else {
-        canvas.fillRoundRect(256, 3, 60, 18, 3, sdMounted ? canvas.color565(15, 38, 22) : canvas.color565(30, 32, 40));
-        canvas.drawRoundRect(256, 3, 60, 18, 3, sdMounted ? canvas.color565(40, 140, 60) : canvas.color565(60, 65, 80));
+        canvas.fillRoundRect(680, 8, 108, 28, 4, sdMounted ? canvas.color565(15, 38, 22) : canvas.color565(30, 32, 40));
+        canvas.drawRoundRect(680, 8, 108, 28, 4, sdMounted ? canvas.color565(40, 140, 60) : canvas.color565(60, 65, 80));
         canvas.setTextColor(sdMounted ? C_GREEN_OK : C_TEXT_MUTED);
-        canvas.setFont(&fonts::Font0);
-        canvas.drawCenterString(sdMounted ? "SD OK" : "NO SD", 286, 7);
+        canvas.setFont(&fonts::Font2);
+        canvas.drawCenterString(sdMounted ? "SD OK" : "NO SD", 734, 14);
     }
 
-    canvas.drawFastHLine(0, 24, 320, C_CARD_BORDER);
+    canvas.drawFastHLine(0, UI_HEADER_H, UI_W, C_CARD_BORDER);
 }
 
 void drawBottomNavBar() {
-    canvas.fillRect(0, 218, 320, 22, canvas.color565(12, 14, 18));
-    canvas.drawFastHLine(0, 218, 320, C_CARD_BORDER);
+    canvas.fillRect(0, UI_H - UI_NAVBAR_H, UI_W, UI_NAVBAR_H, canvas.color565(12, 14, 18));
+    canvas.drawFastHLine(0, UI_H - UI_NAVBAR_H, UI_W, C_CARD_BORDER);
 
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.setFont(&fonts::Font2);
-    canvas.drawString("< PREV", 10, 222);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawString("< PREV", 16, UI_H - UI_NAVBAR_H + 8);
 
-    int dotSpacing = 16;
-    int startDotX = 160 - (((SCREEN_COUNT - 1) * dotSpacing) / 2);
+    int dotSpacing = 24;
+    int startDotX = 400 - (((SCREEN_COUNT - 1) * dotSpacing) / 2);
     for (int i = 0; i < SCREEN_COUNT; i++) {
         int dx = startDotX + (i * dotSpacing);
         if (i == currentScreen) {
-            canvas.fillRoundRect(dx - 5, 226, 12, 6, 3, C_TRD_RED); // TRD Red active capsule
+            canvas.fillRoundRect(dx - 8, UI_H - 24, 18, 8, 4, C_TRD_RED); // TRD Red active capsule
         } else {
-            canvas.fillCircle(dx, 228, 2, canvas.color565(55, 62, 78));
+            canvas.fillCircle(dx, UI_H - 20, 3, canvas.color565(55, 62, 78));
         }
     }
 
-    canvas.drawRightString("NEXT >", 310, 222);
+    canvas.drawRightString("NEXT >", 784, UI_H - UI_NAVBAR_H + 8);
 }
 
 // Page 0: Live Vehicle Cluster (TRD Motorsport Gauge)
@@ -1064,40 +1073,48 @@ void renderDashboard() {
     drawHeaderBar("TOYOTA DASHVIEW - CLUSTER");
 
     // 1. Tachometer Bar (0 - 6000 RPM) with TRD Motorsport color bands
-    int rpmY = 30;
-    canvas.fillRoundRect(10, rpmY, 300, 22, 4, C_CARD_BG);
-    canvas.drawRoundRect(10, rpmY, 300, 22, 4, C_CARD_BORDER);
-    
-    int rpmWidth = map(constrain(vehicleData.rpm, 0, 6000), 0, 6000, 0, 294);
+    int rpmY = 52;
+    canvas.fillRoundRect(12, rpmY, 776, 44, 6, C_CARD_BG);
+    canvas.drawRoundRect(12, rpmY, 776, 44, 6, C_CARD_BORDER);
+
+    int rpmWidth = map(constrain(vehicleData.rpm, 0, 6000), 0, 6000, 0, 320);
     if (rpmWidth > 0) {
         for (int i = 0; i < rpmWidth; i++) {
             uint16_t barColor;
-            if (i < 165) {
+            if (i < 180) {
                 barColor = canvas.color565(0, 200, 160); // Slate cyan-green
-            } else if (i < 235) {
+            } else if (i < 255) {
                 barColor = C_TRD_ORANGE;                 // TRD Heritage Orange
             } else {
                 barColor = C_TRD_RED;                    // TRD Redline
             }
-            canvas.drawFastVLine(13 + i, rpmY + 3, 16, barColor);
+            canvas.drawFastVLine(268 + i, rpmY + 12, 20, barColor);
         }
     }
 
     char buf[48];
-    snprintf(buf, sizeof(buf), "%d RPM", vehicleData.rpm);
+    snprintf(buf, sizeof(buf), "%d", vehicleData.rpm);
     canvas.setTextColor(C_TEXT_WHITE);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawString("TACH", 24, rpmY + 12);
+    canvas.setTextColor(C_TEXT_MUTED);
     canvas.setFont(&fonts::Font2);
-    canvas.drawString("TACHOMETER", 18, rpmY + 4);
-    canvas.drawRightString(buf, 302, rpmY + 4);
+    canvas.drawString("RPM", 100, rpmY + 16);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawRightString(buf, 256, rpmY + 10);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("RPM", 268, rpmY + 2);
 
     // 2. Center Hero: Gear & Torque Converter Lockup (Left Card)
-    canvas.fillRoundRect(10, 58, 92, 94, 6, C_CARD_BG);
-    canvas.drawRoundRect(10, 58, 92, 94, 6, C_CARD_BORDER);
-    canvas.fillRect(12, 58, 88, 3, C_TRD_RED); // TRD Red Accent Line
-    
+    canvas.fillRoundRect(12, 104, 240, 160, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 104, 240, 160, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 104, 236, 4, C_TRD_RED); // TRD Red Accent Line
+
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.setFont(&fonts::Font0);
-    canvas.drawCenterString("GEAR", 56, 66);
+    canvas.setFont(&fonts::Font2);
+    canvas.drawCenterString("GEAR", 132, 114);
 
     canvas.setFont(&fonts::Font7);
     if (vehicleData.tccLocked && vehicleData.gear[0] >= '1' && vehicleData.gear[0] <= '6') {
@@ -1107,78 +1124,130 @@ void renderDashboard() {
         snprintf(buf, sizeof(buf), "%s", vehicleData.gear);
         canvas.setTextColor(C_TEXT_WHITE);
     }
-    canvas.drawCenterString(buf, 56, 78);
+    canvas.drawCenterString(buf, 132, 140);
 
     // Lockup status badge
     if (vehicleData.tccLocked) {
-        canvas.fillRoundRect(16, 130, 80, 16, 3, canvas.color565(180, 140, 0));
+        canvas.fillRoundRect(62, 226, 140, 26, 4, canvas.color565(180, 140, 0));
         canvas.setTextColor(TFT_BLACK);
         canvas.setFont(&fonts::Font2);
-        canvas.drawCenterString("LOCKED", 56, 131);
+        canvas.drawCenterString("TCC LOCKED", 132, 231);
     } else {
-        canvas.fillRoundRect(16, 130, 80, 16, 3, C_CARD_INNER);
+        canvas.fillRoundRect(62, 226, 140, 26, 4, C_CARD_INNER);
         canvas.setTextColor(C_TEXT_MUTED);
-        canvas.setFont(&fonts::Font0);
-        canvas.drawCenterString("OPEN", 56, 134);
+        canvas.setFont(&fonts::Font2);
+        canvas.drawCenterString("TCC OPEN", 132, 231);
     }
 
-    // 3. Air-Fuel Ratio (AFR) Wideband Card (Top Right)
-    canvas.fillRoundRect(108, 58, 202, 45, 6, C_CARD_BG);
-    canvas.drawRoundRect(108, 58, 202, 45, 6, C_CARD_BORDER);
-    canvas.fillRect(110, 58, 198, 3, C_TEXT_CYAN);
+    // 3. Air-Fuel Ratio (AFR) Wideband Card (Middle Top)
+    canvas.fillRoundRect(264, 104, 260, 160, 8, C_CARD_BG);
+    canvas.drawRoundRect(264, 104, 260, 160, 8, C_CARD_BORDER);
+    canvas.fillRect(266, 104, 256, 4, C_TEXT_CYAN);
 
     canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("AIR-FUEL RATIO", 276, 114);
+
+    canvas.setFont(&fonts::Font4);
     canvas.setTextColor(canvas.color565(160, 190, 240));
-    snprintf(buf, sizeof(buf), "Cmd AFR: %.1f (%.2f L)", vehicleData.commandedAfr, vehicleData.commandedAfr / 14.7f);
-    canvas.drawString(buf, 116, 65);
+    snprintf(buf, sizeof(buf), "%.1f", vehicleData.commandedAfr);
+    canvas.drawString("CMD", 276, 138);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.drawString(buf, 340, 134);
 
     uint16_t actAfrColor = (vehicleData.actualAfr > 15.2f) ? C_TRD_RED : ((vehicleData.actualAfr < 12.0f) ? C_TRD_ORANGE : C_GREEN_OK);
     canvas.setTextColor(actAfrColor);
-    snprintf(buf, sizeof(buf), "Act AFR: %.1f (%.2f L)", vehicleData.actualAfr, vehicleData.actualAfr / 14.7f);
-    canvas.drawString(buf, 116, 83);
-
-    // 4. Knock Health (KCLV & KFB) Card (Bottom Right)
-    canvas.fillRoundRect(108, 107, 202, 45, 6, C_CARD_BG);
-    canvas.drawRoundRect(108, 107, 202, 45, 6, C_CARD_BORDER);
-    canvas.fillRect(110, 107, 198, 3, C_TRD_ORANGE);
-
-    uint16_t kclvColor = (vehicleData.kclv >= 19.0f) ? C_GREEN_OK : ((vehicleData.kclv >= 15.0f) ? C_TRD_ORANGE : C_TRD_RED);
-    canvas.setTextColor(kclvColor);
-    snprintf(buf, sizeof(buf), "KCLV: %.1f", vehicleData.kclv);
-    canvas.drawString(buf, 116, 113);
-
-    uint16_t kfbColor = (vehicleData.knockFB < 0) ? C_TRD_RED : C_TEXT_CYAN;
-    canvas.setTextColor(kfbColor);
-    snprintf(buf, sizeof(buf), "KFB: %+2.1f deg", vehicleData.knockFB);
-    canvas.drawString(buf, 214, 113);
+    snprintf(buf, sizeof(buf), "%.1f", vehicleData.actualAfr);
+    canvas.drawString("ACT", 276, 182);
+    canvas.drawString(buf, 340, 178);
 
     canvas.setFont(&fonts::Font0);
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Learned Knock Value (20.0 = Nominal)", 116, 134);
+    canvas.drawString("Lambda (14.7 = stoich)", 276, 232);
+    snprintf(buf, sizeof(buf), "%.2f / %.2f lambda", vehicleData.commandedAfr / 14.7f, vehicleData.actualAfr / 14.7f);
+    canvas.setTextColor(C_TEXT_CYAN);
+    canvas.drawString(buf, 276, 246);
+
+    // 4. Knock Health (KCLV & KFB) Card (Right)
+    canvas.fillRoundRect(536, 104, 252, 160, 8, C_CARD_BG);
+    canvas.drawRoundRect(536, 104, 252, 160, 8, C_CARD_BORDER);
+    canvas.fillRect(538, 104, 248, 4, C_TRD_ORANGE);
+
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("KNOCK HEALTH", 548, 114);
+
+    uint16_t kclvColor = (vehicleData.kclv >= 19.0f) ? C_GREEN_OK : ((vehicleData.kclv >= 15.0f) ? C_TRD_ORANGE : C_TRD_RED);
+    canvas.setFont(&fonts::Font4);
+    canvas.setTextColor(kclvColor);
+    snprintf(buf, sizeof(buf), "%.1f", vehicleData.kclv);
+    canvas.drawString("KCLV", 548, 142);
+    canvas.drawString(buf, 630, 138);
+
+    uint16_t kfbColor = (vehicleData.knockFB < 0) ? C_TRD_RED : C_TEXT_CYAN;
+    canvas.setTextColor(kfbColor);
+    snprintf(buf, sizeof(buf), "%+2.1f", vehicleData.knockFB);
+    canvas.drawString("KFB", 548, 190);
+    canvas.drawString(buf, 630, 186);
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("deg", 700, 192);
+
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("Learned Knock Value (20.0 = Nominal)", 548, 232);
 
     // 5. Dual Mini-Gauges: Throttle % & Engine Load %
-    int botY = 158;
-    canvas.fillRoundRect(10, botY, 145, 52, 4, C_CARD_BG);
-    canvas.drawRoundRect(10, botY, 145, 52, 4, C_CARD_BORDER);
+    int botY = 276;
+    canvas.fillRoundRect(12, botY, 382, 76, 6, C_CARD_BG);
+    canvas.drawRoundRect(12, botY, 382, 76, 6, C_CARD_BORDER);
     canvas.setTextColor(C_TEXT_WHITE);
     canvas.setFont(&fonts::Font2);
-    snprintf(buf, sizeof(buf), "Throttle: %d%%", vehicleData.throttlePct);
-    canvas.drawString(buf, 16, botY + 4);
-    canvas.drawRoundRect(16, botY + 24, 133, 16, 3, C_CARD_BORDER);
-    int thrWidth = map(constrain(vehicleData.throttlePct, 0, 100), 0, 100, 0, 129);
+    snprintf(buf, sizeof(buf), "THROTTLE: %d%%", vehicleData.throttlePct);
+    canvas.drawString(buf, 22, botY + 6);
+    canvas.drawRoundRect(22, botY + 34, 362, 26, 4, C_CARD_BORDER);
+    int thrWidth = map(constrain(vehicleData.throttlePct, 0, 100), 0, 100, 0, 356);
     if (thrWidth > 0) {
-        canvas.fillRect(18, botY + 26, thrWidth, 12, C_TEXT_CYAN);
+        canvas.fillRect(25, botY + 37, thrWidth, 20, C_TEXT_CYAN);
     }
 
-    canvas.fillRoundRect(165, botY, 145, 52, 4, C_CARD_BG);
-    canvas.drawRoundRect(165, botY, 145, 52, 4, C_CARD_BORDER);
+    canvas.fillRoundRect(406, botY, 382, 76, 6, C_CARD_BG);
+    canvas.drawRoundRect(406, botY, 382, 76, 6, C_CARD_BORDER);
     canvas.setTextColor(C_TEXT_WHITE);
-    snprintf(buf, sizeof(buf), "Load: %d%%", vehicleData.engineLoadPct);
-    canvas.drawString(buf, 171, botY + 4);
-    canvas.drawRoundRect(171, botY + 24, 133, 16, 3, C_CARD_BORDER);
-    int loadWidth = map(constrain(vehicleData.engineLoadPct, 0, 100), 0, 100, 0, 129);
+    snprintf(buf, sizeof(buf), "ENGINE LOAD: %d%%", vehicleData.engineLoadPct);
+    canvas.drawString(buf, 416, botY + 6);
+    canvas.drawRoundRect(416, botY + 34, 362, 26, 4, C_CARD_BORDER);
+    int loadWidth = map(constrain(vehicleData.engineLoadPct, 0, 100), 0, 100, 0, 356);
     if (loadWidth > 0) {
-        canvas.fillRect(173, botY + 26, loadWidth, 12, C_TRD_ORANGE);
+        canvas.fillRect(419, botY + 37, loadWidth, 20, C_TRD_ORANGE);
+    }
+
+    // 6. Status Ribbon (WiFi / CAN / RTC)
+    int ribY = 364;
+    canvas.fillRoundRect(12, ribY, 776, 56, 6, C_CARD_BG);
+    canvas.drawRoundRect(12, ribY, 776, 56, 6, C_CARD_BORDER);
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("WIFI:", 24, ribY + 8);
+    canvas.setTextColor(WiFi.status() == WL_CONNECTED ? C_GREEN_OK : C_TEXT_MUTED);
+    canvas.drawString(WiFi.status() == WL_CONNECTED ? "AP UP" : "OFF", 90, ribY + 8);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("CAN RX:", 180, ribY + 8);
+    snprintf(buf, sizeof(buf), "%lu pkts", packetCount);
+    canvas.setTextColor(C_TEXT_CYAN);
+    canvas.drawString(buf, 270, ribY + 8);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("HEAP:", 400, ribY + 8);
+    snprintf(buf, sizeof(buf), "%u KB", ESP.getFreeHeap() / 1024);
+    canvas.setTextColor(C_GREEN_OK);
+    canvas.drawString(buf, 470, ribY + 8);
+    // RTC stamp
+    char stamp[24];
+    if (rtcStamp(stamp, sizeof(stamp))) {
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.drawString("RTC:", 580, ribY + 8);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString(stamp, 630, ribY + 8);
     }
 
     drawBottomNavBar();
@@ -1187,59 +1256,59 @@ void renderDashboard() {
 // Floating Overlay Sub-Screen: Raw Packet Monitor Modal
 void renderRawSnifferModal() {
     // Header Bar
-    canvas.fillRect(0, 0, 320, 24, canvas.color565(14, 16, 22));
-    canvas.fillRect(0, 0, 5, 24, C_TRD_ORANGE);
-    canvas.fillRect(5, 0, 5, 24, C_TRD_RED);
-    canvas.fillRect(10, 0, 5, 24, C_TRD_BURGUNDY);
+    canvas.fillRect(0, 0, UI_W, UI_HEADER_H, canvas.color565(14, 16, 22));
+    canvas.fillRect(0, 0, 6, UI_HEADER_H, C_TRD_ORANGE);
+    canvas.fillRect(6, 0, 6, UI_HEADER_H, C_TRD_RED);
+    canvas.fillRect(12, 0, 6, UI_HEADER_H, C_TRD_BURGUNDY);
 
     canvas.setTextColor(C_TEXT_WHITE, canvas.color565(14, 16, 22));
-    canvas.setFont(&fonts::Font2);
-    canvas.drawString("RAW CAN STREAM", 22, 4);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawString("RAW CAN STREAM", 30, 10);
 
     // Status Pill: STREAMING (Cyan) vs PAUSED (Orange)
     if (isSnifferPaused) {
-        canvas.fillRoundRect(236, 3, 76, 18, 3, canvas.color565(80, 45, 10));
-        canvas.drawRoundRect(236, 3, 76, 18, 3, C_TRD_ORANGE);
+        canvas.fillRoundRect(660, 8, 116, 28, 4, canvas.color565(80, 45, 10));
+        canvas.drawRoundRect(660, 8, 116, 28, 4, C_TRD_ORANGE);
         canvas.setTextColor(C_TRD_ORANGE);
-        canvas.setFont(&fonts::Font0);
-        canvas.drawCenterString("PAUSED", 274, 7);
+        canvas.setFont(&fonts::Font2);
+        canvas.drawCenterString("PAUSED", 718, 13);
     } else {
-        canvas.fillRoundRect(220, 3, 92, 18, 3, canvas.color565(10, 40, 50));
-        canvas.drawRoundRect(220, 3, 92, 18, 3, C_TEXT_CYAN);
+        canvas.fillRoundRect(640, 8, 136, 28, 4, canvas.color565(10, 40, 50));
+        canvas.drawRoundRect(640, 8, 136, 28, 4, C_TEXT_CYAN);
         canvas.setTextColor(C_TEXT_CYAN);
-        canvas.setFont(&fonts::Font0);
-        canvas.drawCenterString("STREAMING", 266, 7);
+        canvas.setFont(&fonts::Font2);
+        canvas.drawCenterString("STREAMING", 708, 13);
     }
 
-    canvas.drawFastHLine(0, 24, 320, C_CARD_BORDER);
+    canvas.drawFastHLine(0, UI_HEADER_H, UI_W, C_CARD_BORDER);
 
     // Table Column Header
-    canvas.fillRect(8, 28, 304, 16, C_CARD_INNER);
-    canvas.drawRoundRect(8, 28, 304, 16, 3, C_CARD_BORDER);
-    canvas.setFont(&fonts::Font0);
+    canvas.fillRect(12, 50, 776, 26, C_CARD_INNER);
+    canvas.drawRoundRect(12, 50, 776, 26, 4, C_CARD_BORDER);
+    canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("CAN ID", 16, 32);
-    canvas.drawString("DLC", 72, 32);
-    canvas.drawString("HEX PAYLOAD (BYTES 0..7)", 105, 32);
+    canvas.drawString("CAN ID", 24, 55);
+    canvas.drawString("DLC", 150, 55);
+    canvas.drawString("HEX PAYLOAD (BYTES 0..7)", 230, 55);
 
-    // Render Frame Rows (up to 6 rows)
+    // Render Frame Rows (up to 10 rows)
     char buf[64];
-    int rowY = 48;
-    for (int i = 0; i < 6; i++) {
+    int rowY = 80;
+    for (int i = 0; i < 10; i++) {
         int idx = (snifferHead - 1 - i + SNIFFER_HISTORY_SIZE) % SNIFFER_HISTORY_SIZE;
         uint16_t rowBg = (i % 2 == 0) ? C_CARD_BG : canvas.color565(22, 26, 36);
-        canvas.fillRoundRect(8, rowY, 304, 24, 4, rowBg);
-        canvas.drawRoundRect(8, rowY, 304, 24, 4, C_CARD_BORDER);
+        canvas.fillRoundRect(12, rowY, 776, 30, 4, rowBg);
 
         if (snifferHistory[idx].id != 0 || snifferHistory[idx].dlc != 0) {
             snprintf(buf, sizeof(buf), "0x%03X", snifferHistory[idx].id);
             canvas.setTextColor(C_TRD_ORANGE);
-            canvas.setFont(&fonts::Font2);
-            canvas.drawString(buf, 14, rowY + 4);
+            canvas.setFont(&fonts::Font4);
+            canvas.drawString(buf, 24, rowY + 3);
 
             snprintf(buf, sizeof(buf), "[%d]", snifferHistory[idx].dlc);
             canvas.setTextColor(C_TEXT_MUTED);
-            canvas.drawString(buf, 72, rowY + 4);
+            canvas.setFont(&fonts::Font2);
+            canvas.drawString(buf, 150, rowY + 7);
 
             char hexBuf[36] = "";
             for (int b = 0; b < snifferHistory[idx].dlc && b < 8; b++) {
@@ -1248,41 +1317,42 @@ void renderRawSnifferModal() {
                 strcat(hexBuf, bStr);
             }
             canvas.setTextColor(C_TEXT_WHITE);
-            canvas.drawString(hexBuf, 105, rowY + 4);
+            canvas.setFont(&fonts::Font4);
+            canvas.drawString(hexBuf, 230, rowY + 3);
         } else {
             canvas.setTextColor(C_TEXT_MUTED);
             canvas.setFont(&fonts::Font0);
-            canvas.drawString("-- Waiting for bus traffic --", 105, rowY + 7);
+            canvas.drawString("-- Waiting for bus traffic --", 230, rowY + 9);
         }
 
-        rowY += 26;
+        rowY += 32;
     }
 
     // Bottom Action Deck (Pause, Clear, Back)
-    int botY = 206;
+    int botY = 412;
 
-    // 1. [ PAUSE / RESUME ] Button (x: 12..98)
+    // 1. [ PAUSE / RESUME ] Button (x: 12..192)
     uint16_t pauseBg = isSnifferPaused ? C_TRD_ORANGE : canvas.color565(25, 35, 52);
     uint16_t pauseBorder = isSnifferPaused ? canvas.color565(255, 180, 50) : canvas.color565(60, 100, 160);
-    canvas.fillRoundRect(12, botY, 86, 28, 4, pauseBg);
-    canvas.drawRoundRect(12, botY, 86, 28, 4, pauseBorder);
+    canvas.fillRoundRect(12, botY, 180, 44, 6, pauseBg);
+    canvas.drawRoundRect(12, botY, 180, 44, 6, pauseBorder);
     canvas.setTextColor(isSnifferPaused ? TFT_BLACK : C_TEXT_WHITE);
-    canvas.setFont(&fonts::Font2);
-    canvas.drawCenterString(isSnifferPaused ? "RESUME" : "PAUSE", 55, botY + 6);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString(isSnifferPaused ? "RESUME" : "PAUSE", 102, botY + 8);
 
-    // 2. [ CLEAR ] Button (x: 104..180)
-    canvas.fillRoundRect(104, botY, 76, 28, 4, canvas.color565(30, 32, 42));
-    canvas.drawRoundRect(104, botY, 76, 28, 4, C_CARD_BORDER);
+    // 2. [ CLEAR ] Button (x: 204..364)
+    canvas.fillRoundRect(204, botY, 160, 44, 6, canvas.color565(30, 32, 42));
+    canvas.drawRoundRect(204, botY, 160, 44, 6, C_CARD_BORDER);
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.setFont(&fonts::Font2);
-    canvas.drawCenterString("CLEAR", 142, botY + 6);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString("CLEAR", 284, botY + 8);
 
-    // 3. [ ✖ BACK / CLOSE ] Button (x: 186..308)
-    canvas.fillRoundRect(186, botY, 122, 28, 4, C_TRD_RED);
-    canvas.drawRoundRect(186, botY, 122, 28, 4, canvas.color565(255, 100, 100));
+    // 3. [ BACK / CLOSE ] Button (x: 376..788)
+    canvas.fillRoundRect(376, botY, 412, 44, 6, C_TRD_RED);
+    canvas.drawRoundRect(376, botY, 412, 44, 6, canvas.color565(255, 100, 100));
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.setFont(&fonts::Font2);
-    canvas.drawCenterString("BACK / CLOSE", 247, botY + 6);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString("BACK / CLOSE", 582, botY + 8);
 }
 
 // Page 1: Live CAN Sniffer & Traffic Monitor
@@ -1300,69 +1370,77 @@ void renderSniffer() {
     bool canDisabled = (currentLogMode == LOG_DATALOG);
 
     // Card 1: CAN Sniffer & Raw Frame Logger Control
-    // Box: x=12, y=28, w=296, h=54
+    // Box: x=12, y=52, w=776, h=86
     uint16_t canBgColor = isCanActive ? canvas.color565(55, 14, 20) : (canDisabled ? canvas.color565(16, 18, 24) : C_CARD_BG);
     uint16_t canBorderColor = isCanActive ? C_TRD_RED : (canDisabled ? canvas.color565(35, 40, 52) : C_CARD_BORDER);
 
-    canvas.fillRoundRect(12, 28, 296, 54, 6, canBgColor);
-    canvas.drawRoundRect(12, 28, 296, 54, 6, canBorderColor);
-    canvas.fillRect(14, 28, 4, 54, isCanActive ? C_TRD_RED : C_TRD_ORANGE);
+    canvas.fillRoundRect(12, 52, 776, 86, 8, canBgColor);
+    canvas.drawRoundRect(12, 52, 776, 86, 8, canBorderColor);
+    canvas.fillRect(14, 52, 6, 86, isCanActive ? C_TRD_RED : C_TRD_ORANGE);
 
     canvas.setFont(&fonts::Font4);
     if (isCanActive) {
         canvas.setTextColor(C_TRD_RED);
-        canvas.drawString("[STOP CAN LOGGING]", 26, 32);
+        canvas.drawString("[STOP CAN LOGGING]", 34, 60);
         canvas.setFont(&fonts::Font2);
         snprintf(buf, sizeof(buf), "REC: %s (%lu frames, %lum%02lus)", currentLogFileName, logEntryCount, elapsedSec / 60, elapsedSec % 60);
         canvas.setTextColor(canvas.color565(255, 200, 200));
-        canvas.drawString(buf, 26, 56);
+        canvas.drawString(buf, 34, 106);
     } else {
         canvas.setTextColor(canDisabled ? C_TEXT_MUTED : C_TEXT_WHITE);
-        canvas.drawString("[START CAN LOGGING]", 26, 32);
+        canvas.drawString("[START CAN LOGGING]", 34, 60);
         canvas.setFont(&fonts::Font2);
         canvas.setTextColor(canDisabled ? canvas.color565(80, 85, 100) : C_TEXT_MUTED);
-        canvas.drawString(canDisabled ? "Locked (Stop PID Datalogger first)" : "Logs raw vehicle bus traffic -> canbus_XXXX.csv", 26, 56);
+        canvas.drawString(canDisabled ? "Locked (Stop PID Datalogger first)" : "Logs raw vehicle bus traffic -> canbus_XXXX.csv", 34, 106);
     }
 
     // Card 2: CAN Bus Traffic & Statistics Deck
-    // Box: x=12, y=88, w=296, h=58
-    canvas.fillRoundRect(12, 88, 296, 58, 6, C_CARD_BG);
-    canvas.drawRoundRect(12, 88, 296, 58, 6, C_CARD_BORDER);
-    canvas.fillRect(14, 88, 4, 58, C_TEXT_CYAN);
+    // Box: x=12, y=146, w=776, h=116
+    canvas.fillRoundRect(12, 146, 776, 116, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 146, 776, 116, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 146, 6, 116, C_TEXT_CYAN);
 
     canvas.setFont(&fonts::Font2);
     // Top Row
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Total Frames:", 24, 94);
+    canvas.drawString("Total Frames:", 34, 156);
     snprintf(buf, sizeof(buf), "%lu pkts", packetCount);
     canvas.setTextColor(C_TEXT_CYAN);
-    canvas.drawString(buf, 110, 94);
-
-    canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Rate:", 196, 94);
-    snprintf(buf, sizeof(buf), "%.0f msg/s", currentPPS);
-    canvas.setTextColor(C_GREEN_OK);
-    canvas.drawString(buf, 238, 94);
-
-    // Bottom Row
-    canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("TWAI Mode:", 24, 118);
-    canvas.setTextColor(C_GREEN_OK);
-    canvas.drawString("500 kbps HS-CAN", 110, 118);
-
-    // Card 3: Raw Packet Stream Terminal Launcher Button
-    // Box: x=12, y=152, w=296, h=52
-    canvas.fillRoundRect(12, 152, 296, 52, 6, canvas.color565(20, 24, 34));
-    canvas.drawRoundRect(12, 152, 296, 52, 6, canvas.color565(45, 60, 85));
-    canvas.fillRect(14, 152, 4, 52, C_TRD_BURGUNDY);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawString(buf, 160, 152);
 
     canvas.setFont(&fonts::Font2);
-    canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString("[+] VIEW LIVE RAW PACKET STREAM", 26, 158);
-
-    canvas.setFont(&fonts::Font0);
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Tap to open live scrolling terminal with pause & frame inspection", 26, 180);
+    canvas.drawString("Rate:", 420, 156);
+    snprintf(buf, sizeof(buf), "%.0f msg/s", currentPPS);
+    canvas.setTextColor(C_GREEN_OK);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawString(buf, 500, 152);
+
+    // Bottom Row
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("TWAI Mode:", 34, 206);
+    canvas.setTextColor(C_GREEN_OK);
+    snprintf(buf, sizeof(buf), "500 kbps HS-CAN (TX GPIO%d / RX GPIO%d)", CAN_TX_PIN, CAN_RX_PIN);
+    canvas.drawString(buf, 160, 206);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(&fonts::Font0);
+    canvas.drawString("Bus stays live while logging; pause the stream modal to freeze rows.", 34, 236);
+
+    // Card 3: Raw Packet Stream Terminal Launcher Button
+    // Box: x=12, y=270, w=776, h=86
+    canvas.fillRoundRect(12, 270, 776, 86, 8, canvas.color565(20, 24, 34));
+    canvas.drawRoundRect(12, 270, 776, 86, 8, canvas.color565(45, 60, 85));
+    canvas.fillRect(14, 270, 6, 86, C_TRD_BURGUNDY);
+
+    canvas.setFont(&fonts::Font4);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.drawString("[+] VIEW LIVE RAW PACKET STREAM", 34, 280);
+
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("Tap to open live scrolling terminal with pause, clear & frame inspection", 34, 326);
 
     drawBottomNavBar();
 }
@@ -1373,51 +1451,53 @@ void renderPidSelector() {
     snprintf(titleBuf, sizeof(titleBuf), "SELECT DATALOG PIDs (%d/%d)", getActivePidCount(), (int)PID_COUNT);
     drawHeaderBar(titleBuf);
 
-    int startY = 28;
-    int rowHeight = 28;
-    int colWidth = 144;
+    int startY = 52;
+    int rowHeight = 42;
+    int colWidth = 250;
 
     for (size_t i = 0; i < PID_COUNT; i++) {
-        int col = (i % 2);
-        int row = (i / 2);
+        int col = (i % 3);
+        int row = (i / 3);
         int bx = 12 + col * (colWidth + 8);
-        int by = startY + row * (rowHeight + 2);
+        int by = startY + row * (rowHeight + 6);
 
         uint16_t boxBg = availablePids[i].enabled ? canvas.color565(32, 18, 24) : C_CARD_BG;
         uint16_t boxBorder = availablePids[i].enabled ? C_TRD_RED : C_CARD_BORDER;
         uint16_t txtColor = availablePids[i].enabled ? C_TEXT_WHITE : C_TEXT_MUTED;
 
-        canvas.fillRoundRect(bx, by, colWidth, rowHeight, 4, boxBg);
-        canvas.drawRoundRect(bx, by, colWidth, rowHeight, 4, boxBorder);
+        canvas.fillRoundRect(bx, by, colWidth, rowHeight, 6, boxBg);
+        canvas.drawRoundRect(bx, by, colWidth, rowHeight, 6, boxBorder);
 
         canvas.setFont(&fonts::Font2);
         canvas.setTextColor(availablePids[i].enabled ? C_TRD_RED : C_TEXT_MUTED);
-        canvas.drawString(availablePids[i].enabled ? "[X]" : "[ ]", bx + 8, by + 5);
+        canvas.drawString(availablePids[i].enabled ? "[X]" : "[ ]", bx + 10, by + 13);
 
         canvas.setTextColor(txtColor);
-        canvas.drawString(availablePids[i].label, bx + 34, by + 5);
+        canvas.drawString(availablePids[i].label, bx + 46, by + 13);
     }
 
-    int botActionY = 210;
-    
+    int botActionY = 412;
+
     // [ ALL ] Button
-    canvas.fillRoundRect(12, botActionY, 65, 26, 4, canvas.color565(25, 35, 52));
-    canvas.drawRoundRect(12, botActionY, 65, 26, 4, canvas.color565(60, 110, 180));
+    canvas.fillRoundRect(12, botActionY, 160, 44, 6, canvas.color565(25, 35, 52));
+    canvas.drawRoundRect(12, botActionY, 160, 44, 6, canvas.color565(60, 110, 180));
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.setFont(&fonts::Font2);
-    canvas.drawCenterString("ALL", 44, botActionY + 5);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString("ALL", 92, botActionY + 8);
 
     // [ NONE ] Button
-    canvas.fillRoundRect(85, botActionY, 65, 26, 4, canvas.color565(45, 20, 25));
-    canvas.drawRoundRect(85, botActionY, 65, 26, 4, C_TRD_BURGUNDY);
+    canvas.fillRoundRect(184, botActionY, 160, 44, 6, canvas.color565(45, 20, 25));
+    canvas.drawRoundRect(184, botActionY, 160, 44, 6, C_TRD_BURGUNDY);
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawCenterString("NONE", 117, botActionY + 5);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString("NONE", 264, botActionY + 8);
 
     // [ SAVE & RETURN ] Button
-    canvas.fillRoundRect(160, botActionY, 148, 26, 4, C_TRD_RED);
-    canvas.drawRoundRect(160, botActionY, 148, 26, 4, canvas.color565(255, 100, 100));
+    canvas.fillRoundRect(356, botActionY, 432, 44, 6, C_TRD_RED);
+    canvas.drawRoundRect(356, botActionY, 432, 44, 6, canvas.color565(255, 100, 100));
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawCenterString("SAVE & RETURN", 234, botActionY + 5);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString("SAVE & RETURN", 572, botActionY + 8);
 }
 
 // Page 2: Dedicated PID Vehicle Datalogger & Parameter Recording Deck
@@ -1435,46 +1515,46 @@ void renderLoggerControl() {
     bool datalogDisabled = (currentLogMode == LOG_CANBUS);
 
     // 1. BUTTON 1: PID Datalogger Start / Stop
-    // Box: x=12, y=28, w=296, h=54
+    // Box: x=12, y=52, w=776, h=86
     uint16_t dlBgColor = isDatalogActive ? canvas.color565(55, 30, 10) : (datalogDisabled ? canvas.color565(16, 18, 24) : C_CARD_BG);
     uint16_t dlBorderColor = isDatalogActive ? C_TRD_ORANGE : (datalogDisabled ? canvas.color565(35, 40, 52) : C_CARD_BORDER);
 
-    canvas.fillRoundRect(12, 28, 296, 54, 6, dlBgColor);
-    canvas.drawRoundRect(12, 28, 296, 54, 6, dlBorderColor);
-    canvas.fillRect(14, 28, 4, 54, isDatalogActive ? C_TRD_ORANGE : C_TEXT_CYAN);
+    canvas.fillRoundRect(12, 52, 776, 86, 8, dlBgColor);
+    canvas.drawRoundRect(12, 52, 776, 86, 8, dlBorderColor);
+    canvas.fillRect(14, 52, 6, 86, isDatalogActive ? C_TRD_ORANGE : C_TEXT_CYAN);
 
     canvas.setFont(&fonts::Font4);
     if (isDatalogActive) {
         canvas.setTextColor(C_TRD_ORANGE);
-        canvas.drawString("[STOP PID DATALOG]", 26, 32);
+        canvas.drawString("[STOP PID DATALOG]", 34, 60);
         canvas.setFont(&fonts::Font2);
         snprintf(buf, sizeof(buf), "REC: %s (%lu samples, %lum%02lus)", currentLogFileName, logEntryCount, elapsedSec / 60, elapsedSec % 60);
         canvas.setTextColor(canvas.color565(255, 230, 180));
-        canvas.drawString(buf, 26, 56);
+        canvas.drawString(buf, 34, 106);
     } else {
         canvas.setTextColor(datalogDisabled ? C_TEXT_MUTED : C_TEXT_WHITE);
-        canvas.drawString("[START PID DATALOG]", 26, 32);
+        canvas.drawString("[START PID DATALOG]", 34, 60);
         canvas.setFont(&fonts::Font2);
         canvas.setTextColor(datalogDisabled ? canvas.color565(80, 85, 100) : C_TEXT_MUTED);
         snprintf(buf, sizeof(buf), "Logs %d Selected PIDs -> datalog_XXXX.csv", getActivePidCount());
-        canvas.drawString(datalogDisabled ? "Locked (Stop CAN Logger on Page 1 first)" : buf, 26, 56);
+        canvas.drawString(datalogDisabled ? "Locked (Stop CAN Logger on Page 1 first)" : buf, 34, 106);
     }
 
     // 2. Active Parameters Preview Deck
-    // Box: x=12, y=88, w=296, h=58
-    canvas.fillRoundRect(12, 88, 296, 58, 6, C_CARD_BG);
-    canvas.drawRoundRect(12, 88, 296, 58, 6, C_CARD_BORDER);
-    canvas.fillRect(14, 88, 4, 58, C_TRD_ORANGE);
+    // Box: x=12, y=146, w=776, h=116
+    canvas.fillRoundRect(12, 146, 776, 116, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 146, 776, 116, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 146, 6, 116, C_TRD_ORANGE);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_WHITE);
     snprintf(buf, sizeof(buf), "Active Parameters (%d of %d Selected):", getActivePidCount(), (int)PID_COUNT);
-    canvas.drawString(buf, 24, 94);
+    canvas.drawString(buf, 34, 156);
 
-    // Build list of active PID tags
+    // Build list of active PID tags (all fit on one 800px-wide line)
     String tagList = "";
     int count = 0;
-    for (size_t i = 0; i < PID_COUNT && count < 7; i++) {
+    for (size_t i = 0; i < PID_COUNT; i++) {
         if (availablePids[i].enabled) {
             tagList += "[";
             tagList += availablePids[i].idStr;
@@ -1482,24 +1562,27 @@ void renderLoggerControl() {
             count++;
         }
     }
-    if (getActivePidCount() > 7) tagList += "...";
-    canvas.setFont(&fonts::Font0);
-    canvas.setTextColor(C_TEXT_CYAN);
-    canvas.drawString(tagList.c_str(), 24, 118);
-
-    // 3. Configure Recorded PIDs Button
-    // Box: x=12, y=152, w=296, h=52
-    canvas.fillRoundRect(12, 152, 296, 52, 6, C_CARD_BG);
-    canvas.drawRoundRect(12, 152, 296, 52, 6, C_CARD_BORDER);
-    canvas.fillRect(14, 152, 4, 52, C_TRD_BURGUNDY);
-
+    if (count == 0) tagList = "(none selected)";
     canvas.setFont(&fonts::Font2);
-    canvas.setTextColor(C_TEXT_WHITE);
-    snprintf(buf, sizeof(buf), "[+] CONFIGURE RECORDED PIDs (%d Active)", getActivePidCount());
-    canvas.drawString(buf, 26, 158);
+    canvas.setTextColor(C_TEXT_CYAN);
+    canvas.drawString(tagList.c_str(), 34, 190);
     canvas.setFont(&fonts::Font0);
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Tap here to customize parameters recorded to SD (10 Hz rate)", 26, 180);
+    canvas.drawString("Sampling at 10 Hz over ISO-TP diagnostics (0x750/0x7D8).", 34, 226);
+
+    // 3. Configure Recorded PIDs Button
+    // Box: x=12, y=270, w=776, h=86
+    canvas.fillRoundRect(12, 270, 776, 86, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 270, 776, 86, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 270, 6, 86, C_TRD_BURGUNDY);
+
+    canvas.setFont(&fonts::Font4);
+    canvas.setTextColor(C_TEXT_WHITE);
+    snprintf(buf, sizeof(buf), "[+] CONFIGURE RECORDED PIDs (%d Active)", getActivePidCount());
+    canvas.drawString(buf, 34, 280);
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("Tap here to customize parameters recorded to SD (10 Hz rate)", 34, 326);
 
     drawBottomNavBar();
 }
@@ -1508,50 +1591,53 @@ void renderLoggerControl() {
 void renderWiFi() {
     drawHeaderBar("WI-FI SAVVYCAN STREAMING");
 
-    canvas.fillRoundRect(12, 32, 296, 178, 6, C_CARD_BG);
-    canvas.drawRoundRect(12, 32, 296, 178, 6, C_CARD_BORDER);
-    canvas.fillRect(14, 32, 292, 3, C_TEXT_CYAN);
+    canvas.fillRoundRect(12, 52, 776, 380, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 52, 776, 380, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 52, 772, 4, C_TEXT_CYAN);
 
-    canvas.setFont(&fonts::Font2);
-    
+    canvas.setFont(&fonts::Font4);
+
     // SSID
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Hotspot SSID:", 24, 46);
+    canvas.drawString("Hotspot SSID:", 34, 74);
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString(WIFI_SSID, 140, 46);
+    canvas.drawString(WIFI_SSID, 320, 74);
 
     // Password
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Password:", 24, 74);
+    canvas.drawString("Password:", 34, 122);
     canvas.setTextColor(C_TRD_ORANGE);
-    canvas.drawString(WIFI_PASS, 140, 74);
+    canvas.drawString(WIFI_PASS, 320, 122);
 
     // SavvyCAN Server Port
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("SavvyCAN Server:", 24, 102);
+    canvas.drawString("SavvyCAN Server:", 34, 170);
     canvas.setTextColor(C_GREEN_OK);
-    canvas.drawString("192.168.4.1:23", 160, 102);
+    canvas.drawString("192.168.4.1:23", 320, 170);
 
     // Client Status Pill
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Client Status:", 24, 130);
+    canvas.drawString("Client Status:", 34, 218);
     if (savvyClient && savvyClient.connected()) {
         char buf[32];
         snprintf(buf, sizeof(buf), "CONNECTED (%lu pkts)", wifiStreamedCount);
         canvas.setTextColor(C_GREEN_OK);
-        canvas.drawString(buf, 140, 130);
+        canvas.drawString(buf, 320, 218);
     } else {
         canvas.setTextColor(C_TRD_ORANGE);
-        canvas.drawString("Waiting for Laptop...", 140, 130);
+        canvas.drawString("Waiting for Laptop...", 320, 218);
     }
 
+    canvas.drawFastHLine(34, 262, 732, C_CARD_BORDER);
+
     // Help Text
-    canvas.fillRoundRect(20, 160, 280, 36, 4, C_CARD_INNER);
-    canvas.drawRoundRect(20, 160, 280, 36, 4, C_CARD_BORDER);
-    canvas.setFont(&fonts::Font0);
+    canvas.fillRoundRect(34, 280, 732, 120, 6, C_CARD_INNER);
+    canvas.drawRoundRect(34, 280, 732, 120, 6, C_CARD_BORDER);
+    canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("In SavvyCAN: Add Network Connection -> 192.168.4.1:23", 26, 166);
-    canvas.drawString("Streams live vehicle bus traffic wirelessly without cables.", 26, 178);
+    canvas.drawString("1. On your laptop, join the Wi-Fi hotspot SSID shown above.", 54, 296);
+    canvas.drawString("2. In SavvyCAN: Add Network Connection -> host 192.168.4.1, port 23.", 54, 326);
+    canvas.drawString("3. Live vehicle bus traffic streams wirelessly, no cables required.", 54, 356);
 
     drawBottomNavBar();
 }
@@ -1560,54 +1646,83 @@ void renderWiFi() {
 void renderSystem() {
     drawHeaderBar("HARDWARE DIAGNOSTICS");
 
-    canvas.fillRoundRect(12, 32, 296, 178, 6, C_CARD_BG);
-    canvas.drawRoundRect(12, 32, 296, 178, 6, C_CARD_BORDER);
-    canvas.fillRect(14, 32, 292, 3, C_TRD_RED);
+    canvas.fillRoundRect(12, 52, 776, 380, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 52, 776, 380, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 52, 772, 4, C_TRD_RED);
 
     char buf[64];
-    canvas.setFont(&fonts::Font2);
+    canvas.setFont(&fonts::Font4);
+
+    int rowY = 74;
+    const int rowH = 50;
 
     // Firmware Version (SemVer)
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Firmware Ver:", 24, 44);
+    canvas.drawString("Firmware Ver:", 34, rowY);
     snprintf(buf, sizeof(buf), "%s (%s)", APP_VERSION_STR, APP_BUILD_DATE);
     canvas.setTextColor(C_TRD_ORANGE);
-    canvas.drawString(buf, 136, 44);
+    canvas.drawString(buf, 360, rowY);
+    rowY += rowH;
 
     // MCU
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("MCU Platform:", 24, 70);
+    canvas.drawString("MCU Platform:", 34, rowY);
     snprintf(buf, sizeof(buf), "ESP32-S3 @ %d MHz", getCpuFrequencyMhz());
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString(buf, 136, 70);
+    canvas.drawString(buf, 360, rowY);
+    rowY += rowH;
 
     // Flash & PSRAM
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Flash & RAM:", 24, 96);
-    snprintf(buf, sizeof(buf), "16MB Flash | %dMB PSRAM", ESP.getPsramSize() / (1024 * 1024));
+    canvas.drawString("Flash & PSRAM:", 34, rowY);
+    snprintf(buf, sizeof(buf), "16MB Flash | %dMB OPI PSRAM", ESP.getPsramSize() / (1024 * 1024));
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString(buf, 136, 96);
+    canvas.drawString(buf, 360, rowY);
+    rowY += rowH;
 
     // Free Heap
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("Free Heap:", 24, 122);
-    snprintf(buf, sizeof(buf), "%u KB (Healthy)", ESP.getFreeHeap() / 1024);
+    canvas.drawString("Free Heap:", 34, rowY);
+    snprintf(buf, sizeof(buf), "%u KB", ESP.getFreeHeap() / 1024);
     canvas.setTextColor(C_GREEN_OK);
-    canvas.drawString(buf, 136, 122);
+    canvas.drawString(buf, 360, rowY);
+    rowY += rowH;
+
+    // Free PSRAM
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("Free PSRAM:", 34, rowY);
+    snprintf(buf, sizeof(buf), "%u KB", ESP.getFreePsram() / 1024);
+    canvas.setTextColor(C_GREEN_OK);
+    canvas.drawString(buf, 360, rowY);
+    rowY += rowH;
 
     // MicroSD
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("MicroSD Card:", 24, 148);
+    canvas.drawString("MicroSD Card:", 34, rowY);
     snprintf(buf, sizeof(buf), "%s (%s)", sdMounted ? "Mounted FAT32" : "Unmounted", (currentLogMode != LOG_IDLE) ? "LOGGING" : "READY");
     canvas.setTextColor(sdMounted ? C_GREEN_OK : C_TRD_RED);
-    canvas.drawString(buf, 136, 148);
+    canvas.drawString(buf, 360, rowY);
+    rowY += rowH;
 
     // CAN Interface
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("CAN Interface:", 24, 174);
-    snprintf(buf, sizeof(buf), "IO%d/IO%d (500k HS-CAN)", CAN_TX_PIN, CAN_RX_PIN);
+    canvas.drawString("CAN Interface:", 34, rowY);
+    snprintf(buf, sizeof(buf), "GPIO%d/GPIO%d (500k HS-CAN)", CAN_TX_PIN, CAN_RX_PIN);
     canvas.setTextColor(C_TEXT_CYAN);
-    canvas.drawString(buf, 136, 174);
+    canvas.drawString(buf, 360, rowY);
+    rowY += rowH;
+
+    // RTC
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("RTC (PCF85063):", 34, rowY);
+    char stamp[24];
+    if (rtcStamp(stamp, sizeof(stamp))) {
+        canvas.setTextColor(C_GREEN_OK);
+        canvas.drawString(stamp, 360, rowY);
+    } else {
+        canvas.setTextColor(C_TRD_RED);
+        canvas.drawString("NOT RESPONDING", 360, rowY);
+    }
 
     drawBottomNavBar();
 }
@@ -1619,59 +1734,60 @@ void renderSettings() {
     char buf[64];
 
     // Card 1: Display Orientation (180-deg Flip)
-    // Box: x=12, y=28, w=296, h=52
-    canvas.fillRoundRect(12, 28, 296, 52, 6, C_CARD_BG);
-    canvas.drawRoundRect(12, 28, 296, 52, 6, C_CARD_BORDER);
-    canvas.fillRect(14, 28, 4, 52, C_TRD_RED);
+    // Box: x=12, y=52, w=776, h=94
+    canvas.fillRoundRect(12, 52, 776, 94, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 52, 776, 94, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 52, 6, 94, C_TRD_RED);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString("Display Orientation (180 deg Flip)", 26, 32);
+    canvas.drawString("Display Orientation (180 deg Flip)", 34, 60);
 
     uint16_t flipBtnBg = isDisplayFlipped ? C_TRD_RED : canvas.color565(25, 35, 50);
     uint16_t flipBtnBorder = isDisplayFlipped ? canvas.color565(255, 100, 100) : canvas.color565(60, 100, 160);
-    canvas.fillRoundRect(26, 52, 268, 22, 4, flipBtnBg);
-    canvas.drawRoundRect(26, 52, 268, 22, 4, flipBtnBorder);
+    canvas.fillRoundRect(34, 94, 732, 40, 6, flipBtnBg);
+    canvas.drawRoundRect(34, 94, 732, 40, 6, flipBtnBorder);
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.setFont(&fonts::Font2);
-    snprintf(buf, sizeof(buf), "MODE: %s (TAP TO FLIP)", isDisplayFlipped ? "FLIPPED 180 (INVERTED)" : "STANDARD 0 (NORMAL)");
-    canvas.drawCenterString(buf, 160, 55);
+    canvas.setFont(&fonts::Font4);
+    snprintf(buf, sizeof(buf), "%s  (TAP TO FLIP)", isDisplayFlipped ? "FLIPPED 180 (INVERTED)" : "STANDARD 0 (NORMAL)");
+    canvas.drawCenterString(buf, 400, 102);
 
     // Card 2: Backlight ON/OFF (4.3B backlight is a digital line on the
     // CH422G expander — there is no PWM dimming on this board)
-    // Box: x=12, y=86, w=296, h=56
-    canvas.fillRoundRect(12, 86, 296, 56, 6, C_CARD_BG);
-    canvas.drawRoundRect(12, 86, 296, 56, 6, C_CARD_BORDER);
-    canvas.fillRect(14, 86, 4, 56, C_TRD_ORANGE);
+    // Box: x=12, y=158, w=776, h=94
+    canvas.fillRoundRect(12, 158, 776, 94, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 158, 776, 94, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 158, 6, 94, C_TRD_ORANGE);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString("Backlight", 26, 90);
+    canvas.drawString("Backlight (auto-dims after 60s idle)", 34, 166);
 
     uint16_t blBtnBg = backlightEnabled ? C_TRD_ORANGE : C_CARD_INNER;
     uint16_t blBtnBorder = backlightEnabled ? canvas.color565(255, 180, 50) : canvas.color565(60, 100, 160);
-    canvas.fillRoundRect(26, 112, 268, 24, 4, blBtnBg);
-    canvas.drawRoundRect(26, 112, 268, 24, 4, blBtnBorder);
+    canvas.fillRoundRect(34, 200, 732, 40, 6, blBtnBg);
+    canvas.drawRoundRect(34, 200, 732, 40, 6, blBtnBorder);
     canvas.setTextColor(backlightEnabled ? TFT_BLACK : C_TEXT_MUTED);
-    canvas.drawCenterString(backlightEnabled ? "STATE: ON (TAP TO OFF)" : "STATE: OFF (TAP TO ON)", 160, 116);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString(backlightEnabled ? "STATE: ON  (TAP TO OFF)" : "STATE: OFF  (TAP TO ON)", 400, 208);
 
     // Card 3: Reboot Controller
-    // Box: x=12, y=148, w=296, h=44
-    canvas.fillRoundRect(12, 148, 296, 44, 6, C_CARD_BG);
-    canvas.drawRoundRect(12, 148, 296, 44, 6, C_CARD_BORDER);
-    canvas.fillRect(14, 148, 4, 44, C_TRD_BURGUNDY);
+    // Box: x=12, y=264, w=776, h=76
+    canvas.fillRoundRect(12, 264, 776, 76, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 264, 776, 76, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 264, 6, 76, C_TRD_BURGUNDY);
 
-    canvas.fillRoundRect(26, 154, 268, 30, 4, canvas.color565(45, 18, 22));
-    canvas.drawRoundRect(26, 154, 268, 30, 4, C_TRD_BURGUNDY);
+    canvas.fillRoundRect(34, 276, 732, 52, 6, canvas.color565(45, 18, 22));
+    canvas.drawRoundRect(34, 276, 732, 52, 6, C_TRD_BURGUNDY);
     canvas.setTextColor(canvas.color565(255, 120, 120));
-    canvas.setFont(&fonts::Font2);
-    canvas.drawCenterString("REBOOT CONTROLLER", 160, 160);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString("REBOOT CONTROLLER", 400, 288);
 
     // Status Footer
-    canvas.fillRoundRect(12, 198, 296, 18, 3, C_CARD_INNER);
-    canvas.setFont(&fonts::Font0);
+    canvas.fillRoundRect(12, 352, 776, 32, 4, C_CARD_INNER);
+    canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawCenterString("Settings auto-saved to persistent flash storage", 160, 202);
+    canvas.drawCenterString("Settings auto-save to persistent flash storage (NVS)", 400, 358);
 
     drawBottomNavBar();
 }
@@ -1769,14 +1885,14 @@ void handleTouch() {
             if (currentScreen == SCREEN_SNIFFER) {
                 // When Floating Raw Packet Terminal is Open
                 if (isRawSnifferModalOpen) {
-                    // Button 1: [ PAUSE / RESUME ] (x: 12..98, y: 204..238)
-                    if (touchLastX >= 12 && touchLastX <= 98 && touchLastY >= 204 && touchLastY <= 238) {
+                    // Button 1: [ PAUSE / RESUME ] (x: 12..192, y: 412..456)
+                    if (touchLastX >= 12 && touchLastX <= 192 && touchLastY >= 412 && touchLastY <= 456) {
                         isSnifferPaused = !isSnifferPaused;
                         Serial.printf("[SNIFFER MODAL] Toggled Pause -> %s\n", isSnifferPaused ? "PAUSED" : "STREAMING");
                         return;
                     }
-                    // Button 2: [ CLEAR ] (x: 104..180, y: 204..238)
-                    else if (touchLastX >= 104 && touchLastX <= 180 && touchLastY >= 204 && touchLastY <= 238) {
+                    // Button 2: [ CLEAR ] (x: 204..364, y: 412..456)
+                    else if (touchLastX >= 204 && touchLastX <= 364 && touchLastY >= 412 && touchLastY <= 456) {
                         for (int i = 0; i < SNIFFER_HISTORY_SIZE; i++) {
                             snifferHistory[i].id = 0;
                             snifferHistory[i].dlc = 0;
@@ -1785,8 +1901,8 @@ void handleTouch() {
                         Serial.println("[SNIFFER MODAL] Cleared history buffer.");
                         return;
                     }
-                    // Button 3: [ BACK / CLOSE ] (x: 186..308, y: 204..238)
-                    else if (touchLastX >= 186 && touchLastX <= 308 && touchLastY >= 204 && touchLastY <= 238) {
+                    // Button 3: [ BACK / CLOSE ] (x: 376..788, y: 412..456)
+                    else if (touchLastX >= 376 && touchLastX <= 788 && touchLastY >= 412 && touchLastY <= 456) {
                         isRawSnifferModalOpen = false;
                         Serial.println("[SNIFFER MODAL] Closed modal -> Returning to Sniffer Page.");
                         return;
@@ -1795,8 +1911,8 @@ void handleTouch() {
                 }
                 // When Normal Page 1 Sniffer View is Open
                 else {
-                    // Card 1: CAN Logger Start / Stop (y: 28 - 82)
-                    if (touchLastY >= 28 && touchLastY <= 82) {
+                    // Card 1: CAN Logger Start / Stop (y: 52 - 138)
+                    if (touchLastY >= 52 && touchLastY <= 138) {
                         if (currentLogMode == LOG_CANBUS) {
                             stopActiveLogger();
                         } else if (currentLogMode == LOG_IDLE) {
@@ -1804,8 +1920,8 @@ void handleTouch() {
                         }
                         return;
                     }
-                    // Card 3: Open Raw Packet Terminal (y: 152 - 204)
-                    else if (touchLastY >= 152 && touchLastY <= 204) {
+                    // Card 3: Open Raw Packet Terminal (y: 270 - 356)
+                    else if (touchLastY >= 270 && touchLastY <= 356) {
                         isRawSnifferModalOpen = true;
                         Serial.println("[SNIFFER] Opened Floating Raw Packet Terminal.");
                         return;
@@ -1816,15 +1932,15 @@ void handleTouch() {
             else if (currentScreen == SCREEN_LOGGER) {
                 // When PID Config Modal is Open
                 if (isPidConfigOpen) {
-                    int startY = 28;
-                    int rowHeight = 28;
-                    int colWidth = 144;
+                    int startY = 52;
+                    int rowHeight = 42;
+                    int colWidth = 250;
 
                     for (size_t i = 0; i < PID_COUNT; i++) {
-                        int col = (i % 2);
-                        int row = (i / 2);
+                        int col = (i % 3);
+                        int row = (i / 3);
                         int bx = 12 + col * (colWidth + 8);
-                        int by = startY + row * (rowHeight + 2);
+                        int by = startY + row * (rowHeight + 6);
 
                         if (touchLastX >= bx && touchLastX <= bx + colWidth &&
                             touchLastY >= by && touchLastY <= by + rowHeight) {
@@ -1834,13 +1950,13 @@ void handleTouch() {
                         }
                     }
 
-                    int botY = 210;
-                    if (touchLastY >= botY && touchLastY <= botY + 28) {
-                        if (touchLastX >= 12 && touchLastX <= 77) {
+                    int botY = 412;
+                    if (touchLastY >= botY && touchLastY <= botY + 44) {
+                        if (touchLastX >= 12 && touchLastX <= 172) {
                             for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = true;
-                        } else if (touchLastX >= 85 && touchLastX <= 150) {
+                        } else if (touchLastX >= 184 && touchLastX <= 344) {
                             for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = false;
-                        } else if (touchLastX >= 160 && touchLastX <= 310) {
+                        } else if (touchLastX >= 356 && touchLastX <= 788) {
                             isPidConfigOpen = false;
                         }
                         return;
@@ -1848,8 +1964,8 @@ void handleTouch() {
                 }
                 // When Normal Page 2 View is Open
                 else {
-                    // Card 1: PID Datalogger Start / Stop (y: 28 - 82)
-                    if (touchLastY >= 28 && touchLastY <= 82) {
+                    // Card 1: PID Datalogger Start / Stop (y: 52 - 138)
+                    if (touchLastY >= 52 && touchLastY <= 138) {
                         if (currentLogMode == LOG_DATALOG) {
                             stopActiveLogger();
                         } else if (currentLogMode == LOG_IDLE) {
@@ -1857,8 +1973,8 @@ void handleTouch() {
                         }
                         return;
                     }
-                    // Card 3: Configure PIDs Button (y: 152 - 204)
-                    else if (touchLastY >= 152 && touchLastY <= 204) {
+                    // Card 3: Configure PIDs Button (y: 270 - 356)
+                    else if (touchLastY >= 270 && touchLastY <= 356) {
                         if (currentLogMode == LOG_IDLE) {
                             isPidConfigOpen = true;
                             Serial.println("[PID PICKER] Opened PID Config Screen.");
@@ -1869,18 +1985,18 @@ void handleTouch() {
             }
             // C. Page 5 (Settings Page)
             else if (currentScreen == SCREEN_SETTINGS) {
-                // Card 1: 180-deg Display Flip (y: 28 - 80)
-                if (touchLastY >= 28 && touchLastY <= 80) {
+                // Card 1: 180-deg Display Flip (y: 52 - 146)
+                if (touchLastY >= 52 && touchLastY <= 146) {
                     saveDisplayFlipSetting(!isDisplayFlipped);
                     return;
                 }
-                // Card 2: Backlight ON/OFF toggle (y: 86 - 142)
-                else if (touchLastY >= 86 && touchLastY <= 142) {
+                // Card 2: Backlight ON/OFF toggle (y: 158 - 252)
+                else if (touchLastY >= 158 && touchLastY <= 252) {
                     saveBacklightSetting(!backlightEnabled);
                     return;
                 }
-                // Card 3: Reboot Controller (y: 148 - 192)
-                else if (touchLastY >= 148 && touchLastY <= 192) {
+                // Card 3: Reboot Controller (y: 264 - 340)
+                else if (touchLastY >= 264 && touchLastY <= 340) {
                     Serial.println("[SETTINGS] Reboot requested -> Restarting ESP32...");
                     delay(200);
                     ESP.restart();
