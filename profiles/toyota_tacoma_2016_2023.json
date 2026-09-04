@@ -12,7 +12,7 @@
     "req_id": "0x7E0",
     "resp_id": "0x7E8",
     "func_id": "0x7DF",
-    "listen_only": true
+    "listen_only": false
   },
   "_note": "Toyota 2GR-FKS / AC60 powertrain CAN. Proprietary signals that differ from the universal baseline. Translated 1:1 from the shipped firmware decode. Bit fields are Motorola (MSB-first, J1939 convention): start_bit is the MSB position, so byte N MSB = N*8.",
   "signals": [

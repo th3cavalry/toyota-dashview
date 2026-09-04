@@ -62,8 +62,10 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
    Next phase: drive gauges from `getSignalCount()`/`getSignalByIndex()` so any
    profile's signals appear without firmware changes. Gauge↔signal key naming
    needs a mapping convention (profile keys are lowercase snake_case).
-2. **`isListenOnly()` is unused.** `sendToyotaObdQueries()` fires every 250 ms
-   even for pure-tap profiles; should be gated (listen-only = no TX).
+2. ~~`isListenOnly()` unused~~ DONE: OBD polling in loop() is gated on
+   `!isListenOnly()`. NOTE: `listen_only` semantics are "no TX ever" — a profile
+   with `obd_poll` signals must set it `false` (Tacoma profile was corrected
+   from true to false; kclv/knockfb + the whole J1979 baseline need polling).
 3. **`isCanFd()` / `getArbBitrate()` unused.** TWAI init is hardcoded 500 k
    classic. CAN-FD SKU needs the MCP2518FD path; bitrate should come from profile.
 4. **Speed scale unverified.** 0x0B4 decode (both legacy and profile JSON) uses

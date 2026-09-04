@@ -196,7 +196,7 @@ static const char kDefaultToyotaProfile[] PROGMEM = R"json(
     "req_id": "0x7E0",
     "resp_id": "0x7E8",
     "func_id": "0x7DF",
-    "listen_only": true
+    "listen_only": false
   },
   "signals": [
     { "key": "rpm", "kind": "can_broadcast", "can_id": "0x2C4", "start_bit": 0, "bit_len": 16, "order": "motorola", "scale": 0.25, "offset": 0, "signed": false },

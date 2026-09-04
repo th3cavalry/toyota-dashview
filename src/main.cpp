@@ -2410,7 +2410,7 @@ void loop() {
     }
 
     // Periodic Toyota OBD-II active queries
-    if (millis() - lastCanActivityTime < 3000 && (millis() - lastObdQueryTime >= 250)) {
+    if (millis() - lastCanActivityTime < 3000 && (millis() - lastObdQueryTime >= 250) && !isListenOnly()) {
         lastObdQueryTime = millis();
         sendToyotaObdQueries();
     }
