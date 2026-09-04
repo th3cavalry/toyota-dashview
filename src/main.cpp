@@ -11,99 +11,121 @@
 
 // Persistent Settings (Flash NVS)
 Preferences preferences;
-bool isDisplayFlipped = false; // Persistent: false = 0 deg (Rot 1), true = 180 deg (Rot 3)
-uint8_t userBrightness = 255;  // 0 - 255 PWM Backlight level
+bool isDisplayFlipped = false; // Persistent: false = normal, true = 180 deg (software push)
+bool backlightEnabled = true;  // Persistent: CH422G digital backlight (no PWM on 4.3B)
+
+// Forward decls (defined with the CH422G / display sections below)
+void backlightOn();
+void backlightOff();
+void pushCanvasToPanel();
 
 // =========================================================================
-// Waveshare ESP32-S3-Touch-LCD-2.8 V2 Hardware Configuration
+// Waveshare ESP32-S3-Touch-LCD-4.3B Hardware Configuration
+// 800x480 ST7265 RGB panel (frame buffer in 8MB OPI PSRAM), GT911 capacitive
+// touch, CH422G IO expander (backlight / SD CS / touch reset) and a PCF85063
+// RTC sharing I2C on GPIO8/9, onboard CAN transceiver on GPIO15/16.
 // =========================================================================
-class LGFX_Waveshare28 : public lgfx::LGFX_Device {
-    lgfx::Panel_ST7789      _panel_instance;
-    lgfx::Bus_SPI           _bus_instance;
-    lgfx::Light_PWM         _light_instance;
+class LGFX_Waveshare43B : public lgfx::LGFX_Device {
+    lgfx::Panel_RGB _panel_instance;
+    lgfx::Bus_RGB   _bus_instance;
 
 public:
-    LGFX_Waveshare28(void) {
-        {
-            auto cfg = _bus_instance.config();
-            cfg.spi_host = SPI2_HOST;
-            cfg.spi_mode = 0;
-            cfg.freq_write = 40000000;
-            cfg.freq_read  = 16000000;
-            cfg.spi_3wire  = false;
-            cfg.use_lock   = true;
-            cfg.dma_channel = SPI_DMA_CH_AUTO;
-            cfg.pin_sclk = 40; // LCD_SCLK
-            cfg.pin_mosi = 45; // LCD_MOSI
-            cfg.pin_miso = -1;
-            cfg.pin_dc   = 41; // LCD_DC
-            _bus_instance.config(cfg);
-            _panel_instance.setBus(&_bus_instance);
-        }
-
+    LGFX_Waveshare43B(void) {
         {
             auto cfg = _panel_instance.config();
-            cfg.pin_cs           = 42; // LCD_CS
-            cfg.pin_rst          = 39; // LCD_RST
-            cfg.pin_busy         = -1;
-            cfg.panel_width      = 240;
-            cfg.panel_height     = 320;
-            cfg.offset_x         = 0;
-            cfg.offset_y         = 0;
-            cfg.offset_rotation  = 0;
-            cfg.dummy_read_pixel = 8;
-            cfg.dummy_read_bits  = 1;
-            cfg.readable         = false;
-            cfg.invert           = true; // IPS panel color inversion
-            cfg.rgb_order        = false;
-            cfg.dlen_16bit       = false;
-            cfg.bus_shared       = false;
+            cfg.memory_width  = 800;
+            cfg.memory_height = 480;
+            cfg.panel_width   = 800;
+            cfg.panel_height  = 480;
+            cfg.offset_x      = 0;
+            cfg.offset_y      = 0;
             _panel_instance.config(cfg);
         }
 
         {
-            auto cfg = _light_instance.config();
-            cfg.pin_bl = 5; // LCD_BL (Backlight PWM)
-            cfg.invert = false;
-            cfg.freq   = 44100;
-            cfg.pwm_channel = 7;
-            _light_instance.config(cfg);
-            _panel_instance.setLight(&_light_instance);
+            // Frame buffer lives in PSRAM (panel refreshes via GDMA).
+            auto cfg = _panel_instance.config_detail();
+            cfg.use_psram = 1;
+            _panel_instance.config_detail(cfg);
         }
+
+        {
+            auto cfg = _bus_instance.config();
+            cfg.panel = &_panel_instance;
+            // RGB565 data lines (esp_lcd DATA0..15 -> LGFX d0..d15, LSB first)
+            cfg.pin_d0  = 14; // B0
+            cfg.pin_d1  = 38; // B1
+            cfg.pin_d2  = 18; // B2
+            cfg.pin_d3  = 17; // B3
+            cfg.pin_d4  = 10; // B4
+            cfg.pin_d5  = 39; // G0
+            cfg.pin_d6  = 0;  // G1
+            cfg.pin_d7  = 45; // G2
+            cfg.pin_d8  = 48; // G3
+            cfg.pin_d9  = 47; // G4
+            cfg.pin_d10 = 21; // G5
+            cfg.pin_d11 = 1;  // R0
+            cfg.pin_d12 = 2;  // R1
+            cfg.pin_d13 = 42; // R2
+            cfg.pin_d14 = 41; // R3
+            cfg.pin_d15 = 40; // R4
+            cfg.pin_henable = 5;  // DE
+            cfg.pin_vsync   = 3;
+            cfg.pin_hsync   = 46;
+            cfg.pin_pclk    = 7;
+            cfg.freq_write  = 16000000; // 16 MHz pixel clock (Waveshare timing)
+            cfg.hsync_polarity    = 0;
+            cfg.hsync_front_porch = 8;
+            cfg.hsync_pulse_width = 4;
+            cfg.hsync_back_porch  = 8;
+            cfg.vsync_polarity    = 0;
+            cfg.vsync_front_porch = 16;
+            cfg.vsync_pulse_width = 4;
+            cfg.vsync_back_porch  = 16;
+            cfg.pclk_active_neg   = 1;
+            cfg.pclk_idle_high    = 0;
+            // Bounce buffer keeps PSRAM bandwidth spikes from tearing the panel.
+            cfg.bounce_buffer_size_px = 800 * 10;
+            _bus_instance.config(cfg);
+        }
+        _panel_instance.setBus(&_bus_instance);
 
         setPanel(&_panel_instance);
     }
 };
 
-LGFX_Waveshare28 tft;
-LGFX_Sprite canvas(&tft); // Double-buffer sprite for 60FPS flicker-free rendering
+LGFX_Waveshare43B tft;
+LGFX_Sprite canvas(&tft); // PSRAM canvas; pushed to the panel at 30 FPS
 
 // =========================================================================
-// Pin Definitions (Waveshare ESP32-S3-Touch-LCD-2.8 V2)
+// Pin Definitions (Waveshare ESP32-S3-Touch-LCD-4.3B)
 // =========================================================================
 
-// Waveshare SN65HVD230 CAN Transceiver (Connected to 12-PIN Header TXD & RXD)
-#define CAN_TX_PIN         GPIO_NUM_43
-#define CAN_RX_PIN         GPIO_NUM_44
+// Onboard CAN transceiver -> OBD-II (screw terminals, 120R termination switch)
+#define CAN_TX_PIN         GPIO_NUM_15
+#define CAN_RX_PIN         GPIO_NUM_16
 
-// MicroSD (TF Card Slot) SPI Pins
-#define SD_MOSI_PIN        17
-#define SD_MISO_PIN        16
-#define SD_SCK_PIN         14
-#define SD_CS_PIN          21
+// MicroSD (TF card slot) SPI pins. Chip-select is on the CH422G expander
+// (EXIO4), so the SD library gets -1 and CS is driven manually.
+#define SD_MOSI_PIN        11
+#define SD_SCK_PIN         12
+#define SD_MISO_PIN        13
+#define SD_CS_PIN          -1
 
-// Capacitive Touch I2C Pins (Hynitron CST3530 V2 Controller)
-#define TP_SDA_PIN         1
-#define TP_SCL_PIN         3
-#define TP_INT_PIN         4
-#define TP_RST_PIN         2
-#define CST3530_I2C_ADDR   0x58
+// Shared I2C bus: GT911 touch + CH422G expander + PCF85063 RTC
+#define I2C_SDA_PIN        8
+#define I2C_SCL_PIN        9
+#define TP_INT_PIN         4      // GT911 interrupt (also selects I2C addr at boot)
 
-const uint8_t CST3530_DATA_REG[4]     = {0xD0, 0x07, 0x00, 0x00};
-const uint8_t CST3530_END_READ_REG[4] = {0xD0, 0x00, 0x02, 0xAB};
+// CH422G extended-IO bit positions (EXIO1..EXIO8 -> bits 0..7)
+#define EXIO_TP_RST        0
+#define EXIO_LCD_BL        1
+#define EXIO_LCD_RST       2
+#define EXIO_SD_CS         3
+#define EXIO_USB_SEL       4
 
 // Screen Auto-Dim Timeout (60 Seconds)
-#define SCREEN_TIMEOUT_MS          60000 
+#define SCREEN_TIMEOUT_MS          60000
 
 // =========================================================================
 // Wi-Fi Access Point & SavvyCAN Streaming Server
@@ -552,8 +574,15 @@ void recordSnifferFrame(const twai_message_t &msg) {
 // MicroSD Card Setup & Non-Overwriting File Generator
 // =========================================================================
 bool mountSD() {
-    sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
-    if (SD.begin(SD_CS_PIN, sdSPI, 20000000)) {
+    // SD chip-select is wired to CH422G EXIO4, not a GPIO. Waveshare's own
+    // bring-up holds CS asserted permanently (the card is the only device on
+    // this SPI bus) and hands the SD stack ss = -1, which makes its internal
+    // digitalWrite(pin) calls no-ops.
+    ch422gSetPin(EXIO_SD_CS, false);
+    ch422gSetPin(EXIO_USB_SEL, false); // keep FSUSB mux routing GPIO19/20 (not needed for SPI, matches demo)
+    sdSPI.setHwCs(false);
+    sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, -1);
+    if (SD.begin(-1, sdSPI, 20000000)) {
         sdMounted = true;
         uint64_t cardSize = SD.cardSize() / (1024 * 1024);
         Serial.printf("[SD] MicroSD Mounted! Card size: %llu MB\n", cardSize);
@@ -621,6 +650,9 @@ bool startCanbusLogger() {
 
     activeLogFile = SD.open(path.c_str(), FILE_WRITE);
     if (activeLogFile) {
+        char stamp[24];
+        activeLogFile.printf("# RTC: %s (fallback = millis since boot)\n",
+                             rtcStamp(stamp, sizeof(stamp)) ? stamp : "unset");
         activeLogFile.println("Timestamp_ms,CAN_ID,Ext,DLC,Data");
         activeLogFile.flush();
         currentLogMode = LOG_CANBUS;
@@ -648,6 +680,9 @@ bool startDataLogger() {
 
     activeLogFile = SD.open(path.c_str(), FILE_WRITE);
     if (activeLogFile) {
+        char stamp[24];
+        activeLogFile.printf("# RTC: %s (fallback = millis since boot)\n",
+                             rtcStamp(stamp, sizeof(stamp)) ? stamp : "unset");
         // Build dynamic CSV header with only selected PIDs
         String header = "Timestamp_ms";
         for (size_t i = 0; i < PID_COUNT; i++) {
@@ -673,21 +708,23 @@ bool startDataLogger() {
 
 // =========================================================================
 // Display Power / Auto-Dimming Control
+// The 4.3B backlight is a digital line on the CH422G expander (no PWM), so
+// auto-dim = full backlight off; the GT911 stays powered and wakes the panel.
 // =========================================================================
 void wakeScreen() {
     lastUserActivityTime = millis();
     if (isScreenDimmed) {
         isScreenDimmed = false;
-        tft.setBrightness(userBrightness);
-        Serial.println("[DISPLAY] Screen Brightness Restored.");
+        backlightOn();
+        Serial.println("[DISPLAY] Backlight restored.");
     }
 }
 
 void dimScreen() {
     if (!isScreenDimmed) {
         isScreenDimmed = true;
-        tft.setBrightness(30);
-        Serial.println("[DISPLAY] Screen Dimmed to standby (1 min timeout).");
+        backlightOff();
+        Serial.println("[DISPLAY] Backlight off (60s idle; touch or traffic wakes).");
     }
 }
 
@@ -697,10 +734,11 @@ void dimScreen() {
 void loadSettings() {
     preferences.begin("dashview", true);
     isDisplayFlipped = preferences.getBool("flip180", false);
-    userBrightness   = preferences.getUChar("bright", 255);
+    backlightEnabled = preferences.getBool("bl_on", true);
     preferences.end();
-    Serial.printf("[SETTINGS] Loaded: Orientation=%s, Brightness=%d\n", 
-                  isDisplayFlipped ? "180-DEG FLIPPED" : "NORMAL", userBrightness);
+    Serial.printf("[SETTINGS] Loaded: Orientation=%s, Backlight=%s\n",
+                  isDisplayFlipped ? "180-DEG FLIPPED" : "NORMAL",
+                  backlightEnabled ? "ON" : "OFF");
 }
 
 void saveDisplayFlipSetting(bool flip) {
@@ -708,74 +746,231 @@ void saveDisplayFlipSetting(bool flip) {
     preferences.begin("dashview", false);
     preferences.putBool("flip180", isDisplayFlipped);
     preferences.end();
-    tft.setRotation(isDisplayFlipped ? 3 : 1);
-    Serial.printf("[SETTINGS] Display Orientation changed to: %s\n", isDisplayFlipped ? "FLIPPED 180 (Rot 3)" : "NORMAL (Rot 1)");
+    // RGB panels rotate in software inside the PSRAM framebuffer; rot 2 (180)
+    // keeps the 800x480 logical size. Touch is mapped back in pollTouch().
+    tft.setRotation(isDisplayFlipped ? 2 : 0);
+    Serial.printf("[SETTINGS] Display Orientation changed to: %s\n", isDisplayFlipped ? "FLIPPED 180 (INVERTED)" : "STANDARD (NORMAL)");
 }
 
-void saveBrightnessSetting(uint8_t br) {
-    userBrightness = br;
+void saveBacklightSetting(bool on) {
+    backlightEnabled = on;
     preferences.begin("dashview", false);
-    preferences.putUChar("bright", userBrightness);
+    preferences.putBool("bl_on", backlightEnabled);
     preferences.end();
-    tft.setBrightness(userBrightness);
-    Serial.printf("[SETTINGS] Brightness set to: %d\n", userBrightness);
+    if (backlightEnabled && !isScreenDimmed) backlightOn();
+    else if (!backlightEnabled) backlightOff();
+    Serial.printf("[SETTINGS] Backlight set to: %s\n", backlightEnabled ? "ON" : "OFF");
 }
 
 // =========================================================================
-// Native Waveshare V2 CST3530 Capacitive Touch Driver
+// CH422G IO Expander (backlight, SD chip-select, touch/LCD resets)
+// Datasheet registers: WR-SET 0x48, WR-OC 0x46, WR-IO 0x70 (8-bit I2C cmds)
 // =========================================================================
-void initCst3530Touch() {
-    pinMode(TP_INT_PIN, INPUT_PULLUP);
-    pinMode(TP_RST_PIN, OUTPUT);
-    digitalWrite(TP_RST_PIN, LOW);
+// CH422G protocol quirk: the command is carried in the I2C ADDRESS byte
+// (datasheet 8-bit codes 0x48/0x46/0x70, i.e. 7-bit 0x24/0x23/0x38) and the
+// payload is a single data byte. This matches Waveshare's esp_io_expander_ch422g.
+#define CH422G_ADDR_WR_SET 0x24  // 0x48>>1: mode/config
+#define CH422G_ADDR_WR_OC  0x23  // 0x46>>1: EXIO8-11 config
+#define CH422G_ADDR_WR_IO  0x38  // 0x70>>1: EXIO1-7 output data
+#define CH422G_SET_IO_OE   0x01  // EXIO1-7 as outputs
+                               // bit2 (OD_EN) stays 0 => push-pull
+
+static uint8_t ch422gOutValue = 0xFF; // EXIO bit state (bit0 = EXIO1)
+
+static bool ch422gWriteCmd(uint8_t addr7, uint8_t value) {
+    Wire.beginTransmission(addr7);
+    Wire.write(value);
+    return Wire.endTransmission() == 0;
+}
+
+bool initCh422g() {
+    // EXIO1-7 push-pull outputs (OD bit cleared), all lines high so the
+    // active-low LCD/TP resets start released.
+    if (!ch422gWriteCmd(CH422G_ADDR_WR_SET, CH422G_SET_IO_OE)) {
+        Serial.println("[CH422G] Expander not responding (addr 0x24)!");
+        return false;
+    }
+    ch422gWriteCmd(CH422G_ADDR_WR_OC, 0x0F); // EXIO8-11 push-pull
+    ch422gOutValue = 0xFF;
+    ch422gWriteCmd(CH422G_ADDR_WR_IO, ch422gOutValue);
+    delay(10);
+    Serial.println("[CH422G] IO expander ready (addr 0x24).");
+    return true;
+}
+
+void ch422gSetPin(uint8_t bit, bool level) {
+    if (level) ch422gOutValue |= (1 << bit);
+    else       ch422gOutValue &= ~(1 << bit);
+    ch422gWriteCmd(CH422G_ADDR_WR_IO, ch422gOutValue);
+}
+
+// Backlight on the 4.3B is wired to EXIO3 (digital only — the CH422G has no
+// PWM, so Waveshare's own firmware also treats it strictly on/off).
+void backlightOn()  { ch422gSetPin(EXIO_LCD_BL, true); }
+void backlightOff() { ch422gSetPin(EXIO_LCD_BL, false); }
+
+// =========================================================================
+// PCF85063 RTC (I2C 0x51) — real-time timestamps for CSV logs
+// =========================================================================
+#define RTC_I2C_ADDR 0x51
+struct RtcTime { uint16_t year; uint8_t month, day, hour, minute, second; bool valid; };
+
+static uint8_t bcd2dec(uint8_t b) { return (b >> 4) * 10 + (b & 0x0F); }
+static uint8_t dec2bcd(uint8_t d) { return (d / 10) << 4 | (d % 10); }
+
+bool rtcWriteBytes(uint8_t reg, const uint8_t* data, size_t len) {
+    Wire.beginTransmission(RTC_I2C_ADDR);
+    Wire.write(reg);
+    Wire.write(data, len);
+    return Wire.endTransmission() == 0;
+}
+
+void initRtc() {
+    uint8_t ctrl1 = 0x00; // stop no clocks, normal mode
+    rtcWriteBytes(0x00, &ctrl1, 1);
+
+    uint8_t regs[7] = {0};
+    Wire.beginTransmission(RTC_I2C_ADDR);
+    Wire.write(0x04);
+    if (Wire.endTransmission(false) != 0 ||
+        Wire.requestFrom(RTC_I2C_ADDR, (uint8_t)7) != 7) {
+        Serial.println("[RTC] PCF85063 not found at 0x51 — logs use millis only.");
+        return;
+    }
+    Wire.readBytes(regs, 7);
+
+    // OS bit in ctrl2-style status or invalid BCD means the RTC lost power:
+    // seed it with the firmware build time.
+    uint8_t sec = bcd2dec(regs[0] & 0x7F);
+    bool invalid = (regs[0] & 0x80) || sec > 59 || bcd2dec(regs[1]) > 59 ||
+                   bcd2dec(regs[2]) > 23 || 2000 + bcd2dec(regs[6]) < 2024;
+    if (invalid) {
+        // Seed: __DATE__ "Sep  3 2026"-style + __TIME__ build clock
+        int mon = 1, day = 1, year = 2000;
+        const char* months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+        char mon3[4] = {__DATE__[0], __DATE__[1], __DATE__[2], 0};
+        const char* mp = strstr(months, mon3);
+        if (mp) mon = (int)(mp - months) / 3 + 1;
+        day  = (__DATE__[4] == ' ') ? __DATE__[5] - '0' : (__DATE__[4] - '0') * 10 + (__DATE__[5] - '0');
+        year = 2000 + ( __DATE__[9] - '0') * 10 + (__DATE__[10] - '0');
+        uint8_t t[] = {
+            0, 0, 0, // sec min hour (recovered from __TIME__ below)
+            dec2bcd((uint8_t)day), 0, dec2bcd((uint8_t)mon),
+            (uint8_t)(year - 2000)
+        };
+        t[2] = dec2bcd((uint8_t)((__TIME__[0] - '0') * 10 + (__TIME__[1] - '0')));
+        t[1] = dec2bcd((uint8_t)((__TIME__[3] - '0') * 10 + (__TIME__[4] - '0')));
+        t[0] = dec2bcd((uint8_t)((__TIME__[6] - '0') * 10 + (__TIME__[7] - '0')));
+        rtcWriteBytes(0x04, t, 7);
+        Serial.println("[RTC] Clock lost power — seeded with build time.");
+    }
+    Serial.println("[RTC] PCF85063 online.");
+}
+
+RtcTime readRtc() {
+    RtcTime t{};
+    uint8_t regs[7] = {0};
+    Wire.beginTransmission(RTC_I2C_ADDR);
+    Wire.write(0x04);
+    if (Wire.endTransmission(false) != 0 ||
+        Wire.requestFrom(RTC_I2C_ADDR, (uint8_t)7) != 7) {
+        return t;
+    }
+    Wire.readBytes(regs, 7);
+    if (regs[0] & 0x80) return t; // oscillator stopped
+    t.second = bcd2dec(regs[0] & 0x7F);
+    t.minute = bcd2dec(regs[1] & 0x7F);
+    t.hour   = bcd2dec(regs[2] & 0x3F);
+    t.day    = bcd2dec(regs[3] & 0x3F);
+    t.month  = bcd2dec(regs[5] & 0x1F);
+    t.year   = 2000 + bcd2dec(regs[6]);
+    t.valid  = (t.month >= 1 && t.month <= 12 && t.day >= 1 && t.day <= 31);
+    return t;
+}
+
+// Fills 'out' with "YYYY-MM-DD HH:MM:SS" when the RTC is trustworthy.
+bool rtcStamp(char* out, size_t len) {
+    RtcTime t = readRtc();
+    if (!t.valid) return false;
+    snprintf(out, len, "%04u-%02u-%02u %02u:%02u:%02u", t.year, t.month, t.day, t.hour, t.minute, t.second);
+    return true;
+}
+
+// =========================================================================
+// GT911 Capacitive Touch (I2C 0x5D/0x14, INT on GPIO4, reset on EXIO1)
+// Coordinates are native panel pixels (0..799 x 0..479) — no transform.
+// =========================================================================
+#define GT911_REG_POINT_STAT 0x814E
+static uint8_t gt911Addr = 0;
+
+void initGt911Touch() {
+    // Reset pulse via the expander; INT state during reset latches the addr.
+    ch422gSetPin(EXIO_TP_RST, false);
     delay(20);
-    digitalWrite(TP_RST_PIN, HIGH);
+    ch422gSetPin(EXIO_TP_RST, true);
     delay(100);
 
-    Wire1.begin(TP_SDA_PIN, TP_SCL_PIN, 400000);
-    Serial.println("[TOUCH] Initialized CST3530 V2 Touch Controller on Wire1 (SDA:1, SCL:3, addr:0x58)");
+    const uint8_t candidates[2] = {0x5D, 0x14};
+    for (uint8_t addr : candidates) {
+        Wire.beginTransmission(addr);
+        Wire.write((uint8_t)(GT911_REG_POINT_STAT >> 8));
+        Wire.write((uint8_t)(GT911_REG_POINT_STAT & 0xFF));
+        if (Wire.endTransmission(false) == 0 && Wire.requestFrom(addr, (uint8_t)1) == 1) {
+            Wire.read(); // discard
+            gt911Addr = addr;
+            Serial.printf("[TOUCH] GT911 online at 0x%02X (INT: GPIO4)\n", addr);
+            return;
+        }
+    }
+    Serial.println("[TOUCH] No GT911 found at 0x5D/0x14 — touch disabled.");
 }
 
-bool pollCst3530Touch(int &screenX, int &screenY) {
-    Wire1.beginTransmission(CST3530_I2C_ADDR);
-    Wire1.write(CST3530_DATA_REG, 4);
-    if (Wire1.endTransmission(false) != 0) {
+bool pollTouch(int &screenX, int &screenY) {
+    if (!gt911Addr) return false;
+
+    Wire.beginTransmission(gt911Addr);
+    Wire.write((uint8_t)(GT911_REG_POINT_STAT >> 8));
+    Wire.write((uint8_t)(GT911_REG_POINT_STAT & 0xFF));
+    if (Wire.endTransmission(false) != 0 || Wire.requestFrom(gt911Addr, (uint8_t)1) != 1) {
+        return false;
+    }
+    uint8_t status = Wire.read();
+    if (!(status & 0x80)) return false;          // no new data
+    uint8_t count = status & 0x0F;
+    if (count == 0 || count > 5) {               // flush flag and bail
+        Wire.beginTransmission(gt911Addr);
+        Wire.write((uint8_t)(GT911_REG_POINT_STAT >> 8));
+        Wire.write((uint8_t)(GT911_REG_POINT_STAT & 0xFF));
+        Wire.write(0);
+        Wire.endTransmission();
         return false;
     }
 
-    if (Wire1.requestFrom((uint8_t)CST3530_I2C_ADDR, (uint8_t)9) != 9) {
-        return false;
-    }
+    // Point 1 track data: [id, xL, xH, yL, yH, ...] from 0x8150
+    Wire.beginTransmission(gt911Addr);
+    Wire.write((uint8_t)(0x8150 >> 8));
+    Wire.write((uint8_t)(0x8150 & 0xFF));
+    bool ok = (Wire.endTransmission(false) == 0 && Wire.requestFrom(gt911Addr, (uint8_t)5) == 5);
+    uint8_t pt[5] = {0};
+    if (ok) Wire.readBytes(pt, 5);
 
-    uint8_t buf[9];
-    Wire1.readBytes(buf, 9);
+    // Clear the buffer-ready flag so the controller updates again
+    Wire.beginTransmission(gt911Addr);
+    Wire.write((uint8_t)(GT911_REG_POINT_STAT >> 8));
+    Wire.write((uint8_t)(GT911_REG_POINT_STAT & 0xFF));
+    Wire.write(0);
+    Wire.endTransmission();
 
-    Wire1.beginTransmission(CST3530_I2C_ADDR);
-    Wire1.write(CST3530_END_READ_REG, 4);
-    Wire1.endTransmission(true);
+    if (!ok) return false;
+    int rawX = pt[1] | (pt[2] << 8);
+    int rawY = pt[3] | (pt[4] << 8);
+    if (rawX > 799) rawX = 799;
+    if (rawY > 479) rawY = 479;
 
-    uint8_t count = buf[3] & 0x0F;
-    if (count == 0 || (buf[8] & 0xF0) == 0x00) {
-        return false;
-    }
-
-    uint16_t rawX = ((uint16_t)(buf[7] & 0x0F) << 8) | buf[4];
-    uint16_t rawY = ((uint16_t)(buf[7] & 0xF0) << 4) | buf[5];
-
-    // Transform touch coordinates based on 180-deg orientation flip
-    if (isDisplayFlipped) {
-        screenX = 320 - rawY;
-        screenY = rawX;
-    } else {
-        screenX = rawY;
-        screenY = 240 - rawX;
-    }
-
-    if (screenX < 0) screenX = 0;
-    if (screenX > 320) screenX = 320;
-    if (screenY < 0) screenY = 0;
-    if (screenY > 240) screenY = 240;
-
+    // 180-deg mount flip: map panel coordinates back into canvas space so all
+    // hit-box rectangles can stay written in normal orientation.
+    screenX = isDisplayFlipped ? 799 - rawX : rawX;
+    screenY = isDisplayFlipped ? 479 - rawY : rawY;
     return true;
 }
 
@@ -1529,11 +1724,11 @@ void prevScreen() {
 // =========================================================================
 // Capacitive Touch & Gesture / Button Tap Engine
 // =========================================================================
-#define SWIPE_MIN_DIST_PX 160  // Must swipe at least half of the 320px screen width
+#define SWIPE_MIN_DIST_PX 400  // Must swipe at least half of the 800px screen width
 
 void handleTouch() {
     int touchX = 0, touchY = 0;
-    bool touched = pollCst3530Touch(touchX, touchY);
+    bool touched = pollTouch(touchX, touchY);
 
     if (touched) {
         wakeScreen();
@@ -1805,30 +2000,47 @@ void processDatalogging() {
 void setup() {
     Serial.begin(115200);
     delay(200);
-    Serial.printf("\n=== %s %s (ESP32-S3 Touch 2.8 V2) ===\n", APP_NAME, APP_VERSION_STR);
+    Serial.printf("\n=== %s %s (ESP32-S3 Touch LCD 4.3B) ===\n", APP_NAME, APP_VERSION_STR);
 
-    // 0. Load persistent settings (180-deg flip & brightness)
+    // 0. Load persistent settings (180-deg flip & backlight)
     loadSettings();
 
-    // 1. Initialize Display & Backlight
+    // 1. Shared I2C bus: GT911 touch + CH422G expander + PCF85063 RTC
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, 400000);
+
+    // 2. CH422G gates several subsystems, so it comes up first.
+    initCh422g();
+    backlightOff();                     // stay dark until the first frame is on screen
+    ch422gSetPin(EXIO_SD_CS, true);     // release SD CS until mountSD()
+    ch422gSetPin(EXIO_USB_SEL, false);  // USB stays on the ESP32-S3
+
+    // 3. Release LCD + touch-panel resets (active-low on the expander)
+    ch422gSetPin(EXIO_LCD_RST, false); delay(20);  ch422gSetPin(EXIO_LCD_RST, true);
+    ch422gSetPin(EXIO_TP_RST, false);  delay(120); ch422gSetPin(EXIO_TP_RST, true);
+    delay(200);
+
+    // 4. Display: RGB panel frame buffer lives in the 8MB OPI PSRAM
     tft.init();
-    tft.setRotation(isDisplayFlipped ? 3 : 1); // Landscape Normal (1) or Inverted (3)
-    tft.setBrightness(userBrightness);
+    tft.setRotation(isDisplayFlipped ? 2 : 0);
+    Serial.printf("[DISPLAY] Panel ready: %dx%d, PSRAM frame buffer: %s\n",
+                  tft.width(), tft.height(), psramFound() ? "yes" : "NO (memory_type mismatch!)");
 
-    // Create 320x240 Canvas Sprite
+    // Draw into a PSRAM-backed canvas, then push whole frames to the panel.
     canvas.setColorDepth(16);
-    canvas.createSprite(320, 240);
+    canvas.setPsram(true);
+    canvas.createSprite(tft.width(), tft.height());
 
-    // 2. OEM Toyota Boot Splash Screen
+    backlightOn();
+    initGt911Touch();
+    initRtc();
+
+    // 5. OEM Toyota Boot Splash Screen
     showToyotaBootSplash();
 
-    // 3. Capacitive Touch Controller (Native CST3530 V2 Driver)
-    initCst3530Touch();
-
-    // 4. Wi-Fi SoftAP & SavvyCAN Streaming Server
+    // 6. Wi-Fi SoftAP & SavvyCAN Streaming Server
     initWiFiStreaming();
 
-    // 5. CAN Bus & MicroSD
+    // 7. CAN Bus & MicroSD
     initCAN();
     mountSD();
 
@@ -1842,7 +2054,7 @@ void loop() {
 
         // 1. Check if screen tapped
         int touchX = 0, touchY = 0;
-        if (pollCst3530Touch(touchX, touchY)) {
+        if (pollTouch(touchX, touchY)) {
             currentScreen = SCREEN_DASHBOARD; // ALWAYS enter Dashboard (Page 0)
             isBootSplashActive = false;
             wasTouched = false;
