@@ -17,7 +17,7 @@ In-cabin digital gauge cluster and CAN datalogger for the third-generation Toyot
 | RTC | PCF85063 with supercap backup |
 | Storage | microSD (SPI) |
 | Power | 7–36 V DC input |
-| Wireless | Wi-Fi 2.4/5 GHz + BLE (ESP32-S3) |
+| Wireless | Wi-Fi 2.4 GHz + BLE (ESP32-S3) |
 
 ## Wiring
 
@@ -42,7 +42,7 @@ Set the onboard CAN termination switch to **ON** (the Tacoma bus has one termina
 - Raw CAN sniffer page with live traffic terminal
 - SavvyCAN-compatible TCP streaming over Wi-Fi (port 23)
 - Auto-dim after 60 s of inactivity; tap or CAN traffic to wake
-- 180° display flip for inverted mounts; brightness control (persistent NVS)
+- 180° display flip for inverted mounts (persistent NVS); backlight auto-dim (digital on/off)
 
 ## Build & flash
 
