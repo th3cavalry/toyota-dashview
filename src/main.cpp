@@ -12,6 +12,7 @@
 #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
 #include "version.h"
 #include "toyota_splash.h"
+#include "profile.h"
 #include "custom_dash.h"   // Custom Dash API (impl included later, post-palette)
 
 // Persistent Settings (Flash NVS)
@@ -445,6 +446,8 @@ void sendIsotpFlowControl() {
 // Decode a complete OBD payload: p[0]=mode(+0x40), p[1]=PID, p[2..]=data bytes
 void decodeObdPayload(const uint8_t* p, uint16_t len) {
     if (len < 2) return;
+    // Universal vehicle profile OBD response decode
+    onObdPollResponse(p[0], p[1], &p[2], len >= 2 ? (len - 2) : 0, millis());
     if (p[0] == 0x61 && p[1] == 0xA2 && len >= 4) {
         float rawKclv = p[2] * 0.1f;
         if (rawKclv >= 10.0f && rawKclv <= 30.0f) {
@@ -533,6 +536,8 @@ void decodeTacomaFrame(const twai_message_t &msg) {
     if (msg.identifier == OBD_RESPONSE_ID && msg.data_length_code >= 1) {
         handleObdIsoTp(msg);
     }
+    // Universal vehicle profile decode
+    onBroadcastFrame(msg.identifier, msg.data, msg.data_length_code, millis());
     if (msg.identifier == 0x0B4 && msg.data_length_code >= 8) {
         // NOTE: scale factor unverified against the Toyota signal spec (0x0B4
         // wheel-speed messages are commonly 0.05625/0.0625 km/h per bit).
@@ -2125,6 +2130,8 @@ void setup() {
 
     // 0. Load persistent settings (180-deg flip & backlight)
     loadSettings();
+    loadDefaultProfile();
+    Serial.printf("[PROFILE] Vehicle Profile Loaded: %s (%s)\n", getProfileName(), getProfileId());
 
     // 1. Shared I2C bus: GT911 touch + CH422G expander + PCF85063 RTC
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, 400000);
