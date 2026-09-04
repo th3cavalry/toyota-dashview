@@ -1737,66 +1737,185 @@ void renderSystem() {
 }
 
 // Page 5: Settings & Display Configuration
+// =========================================================================
+// Vehicle Profile selection (SD card profiles + NVS persistence)
+// =========================================================================
+
+// Load /profiles/<id>.json from SD into the profile engine and persist the
+// choice in NVS ("prof"). id empty = clear selection, revert to built-in.
+static bool applyProfileSelection(const char* id) {
+    preferences.begin("dashview", false);
+    preferences.putString("prof", id ? id : "");
+    preferences.end();
+    if (!id || id[0] == 0) {
+        loadDefaultProfile();
+        Serial.printf("[PROFILE] Reverted to built-in: %s (%s)\n", getProfileName(), getProfileId());
+        return true;
+    }
+    if (!sdMounted) return false;
+    char profPath[64];
+    snprintf(profPath, sizeof(profPath), "/profiles/%s.json", id);
+    if (!SD.exists(profPath)) return false;
+    File pf = SD.open(profPath, FILE_READ);
+    if (!pf) return false;
+    String profJson = pf.readString();
+    pf.close();
+    if (!loadProfile(profJson.c_str())) {
+        Serial.println("[PROFILE] Profile JSON invalid - selection kept, built-in still active.");
+        return false;
+    }
+    Serial.printf("[PROFILE] Profile active: %s (%s)\n", getProfileName(), getProfileId());
+    return true;
+}
+
+// SD profile picker: scan /profiles/*.json once per SD mount into a small table
+static char g_profileIds[6][24];
+static int  g_profileCount = 0;
+static bool g_profileScanMounted = false;
+
+static void scanProfileDir() {
+    g_profileCount = 0;
+    if (!sdMounted) { g_profileScanMounted = false; return; }
+    File dir = SD.open("/profiles");
+    if (!dir) { g_profileScanMounted = true; return; }
+    File entry = dir.openNextFile();
+    while (entry && g_profileCount < 6) {
+        const char* nm = entry.name(); // full path like "/profiles/foo.json"
+        size_t l = strlen(nm);
+        if (!entry.isDirectory() && l > 5 && strcmp(nm + l - 5, ".json") == 0) {
+            const char* base = strrchr(nm, '/');
+            base = base ? base + 1 : nm;
+            size_t idlen = strlen(base) - 5;
+            if (idlen > 0 && idlen < 24) {
+                strncpy(g_profileIds[g_profileCount], base, idlen);
+                g_profileIds[g_profileCount][idlen] = 0;
+                g_profileCount++;
+            }
+        }
+        entry.close();
+        entry = dir.openNextFile();
+    }
+    dir.close();
+    g_profileScanMounted = true;
+}
+
+// Cell hit-test for the profile picker strip (4 cells at y 272-314).
+// Returns: 0..2 = scanned profile index, 3 = BUILT-IN cell, -1 = miss.
+static int profileCellHit(int x, int y) {
+    if (y < 272 || y > 314) return -1;
+    const int xs[4] = {34, 222, 410, 598};
+    for (int i = 0; i < 4; i++)
+        if (x >= xs[i] && x < xs[i] + 176) return i;
+    return -1;
+}
+
 void renderSettings() {
     drawHeaderBar("TOYOTA DASHVIEW - SETTINGS");
 
     char buf[64];
 
     // Card 1: Display Orientation (180-deg Flip)
-    // Box: x=12, y=52, w=776, h=94
-    canvas.fillRoundRect(12, 52, 776, 94, 8, C_CARD_BG);
-    canvas.drawRoundRect(12, 52, 776, 94, 8, C_CARD_BORDER);
-    canvas.fillRect(14, 52, 6, 94, C_TRD_RED);
+    // Box: x=12, y=52, w=776, h=86
+    canvas.fillRoundRect(12, 52, 776, 86, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 52, 776, 86, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 52, 6, 86, C_TRD_RED);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString("Display Orientation (180 deg Flip)", 34, 60);
+    canvas.drawString("Display Orientation (180 deg Flip)", 34, 58);
 
     uint16_t flipBtnBg = isDisplayFlipped ? C_TRD_RED : canvas.color565(25, 35, 50);
     uint16_t flipBtnBorder = isDisplayFlipped ? canvas.color565(255, 100, 100) : canvas.color565(60, 100, 160);
-    canvas.fillRoundRect(34, 94, 732, 40, 6, flipBtnBg);
-    canvas.drawRoundRect(34, 94, 732, 40, 6, flipBtnBorder);
+    canvas.fillRoundRect(34, 88, 732, 40, 6, flipBtnBg);
+    canvas.drawRoundRect(34, 88, 732, 40, 6, flipBtnBorder);
     canvas.setTextColor(C_TEXT_WHITE);
     canvas.setFont(&fonts::Font4);
     snprintf(buf, sizeof(buf), "%s  (TAP TO FLIP)", isDisplayFlipped ? "FLIPPED 180 (INVERTED)" : "STANDARD 0 (NORMAL)");
-    canvas.drawCenterString(buf, 400, 102);
+    canvas.drawCenterString(buf, 400, 96);
 
     // Card 2: Backlight ON/OFF (4.3B backlight is a digital line on the
     // CH422G expander — there is no PWM dimming on this board)
-    // Box: x=12, y=158, w=776, h=94
-    canvas.fillRoundRect(12, 158, 776, 94, 8, C_CARD_BG);
-    canvas.drawRoundRect(12, 158, 776, 94, 8, C_CARD_BORDER);
-    canvas.fillRect(14, 158, 6, 94, C_TRD_ORANGE);
+    // Box: x=12, y=146, w=776, h=86
+    canvas.fillRoundRect(12, 146, 776, 86, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 146, 776, 86, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 146, 6, 86, C_TRD_ORANGE);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString("Backlight (auto-dims after 60s idle)", 34, 166);
+    canvas.drawString("Backlight (auto-dims after 60s idle)", 34, 152);
 
     uint16_t blBtnBg = backlightEnabled ? C_TRD_ORANGE : C_CARD_INNER;
     uint16_t blBtnBorder = backlightEnabled ? canvas.color565(255, 180, 50) : canvas.color565(60, 100, 160);
-    canvas.fillRoundRect(34, 200, 732, 40, 6, blBtnBg);
-    canvas.drawRoundRect(34, 200, 732, 40, 6, blBtnBorder);
+    canvas.fillRoundRect(34, 182, 732, 40, 6, blBtnBg);
+    canvas.drawRoundRect(34, 182, 732, 40, 6, blBtnBorder);
     canvas.setTextColor(backlightEnabled ? TFT_BLACK : C_TEXT_MUTED);
     canvas.setFont(&fonts::Font4);
-    canvas.drawCenterString(backlightEnabled ? "STATE: ON  (TAP TO OFF)" : "STATE: OFF  (TAP TO ON)", 400, 208);
+    canvas.drawCenterString(backlightEnabled ? "STATE: ON  (TAP TO OFF)" : "STATE: OFF  (TAP TO ON)", 400, 190);
 
-    // Card 3: Reboot Controller
-    // Box: x=12, y=264, w=776, h=76
-    canvas.fillRoundRect(12, 264, 776, 76, 8, C_CARD_BG);
-    canvas.drawRoundRect(12, 264, 776, 76, 8, C_CARD_BORDER);
-    canvas.fillRect(14, 264, 6, 76, C_TRD_BURGUNDY);
+    // Card 3: Vehicle Profile picker. Tapping a cell hot-swaps the decode
+    // engine (no reboot) and persists the choice in NVS key "prof".
+    // Box: x=12, y=240, w=776, h=110
+    canvas.fillRoundRect(12, 240, 776, 110, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 240, 776, 110, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 240, 6, 110, canvas.color565(60, 160, 90));
 
-    canvas.fillRoundRect(34, 276, 732, 52, 6, canvas.color565(45, 18, 22));
-    canvas.drawRoundRect(34, 276, 732, 52, 6, C_TRD_BURGUNDY);
-    canvas.setTextColor(canvas.color565(255, 120, 120));
-    canvas.setFont(&fonts::Font4);
-    canvas.drawCenterString("REBOOT CONTROLLER", 400, 288);
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.drawString("Vehicle Profile (SD: /profiles)", 34, 246);
 
-    // Status Footer
-    canvas.fillRoundRect(12, 352, 776, 32, 4, C_CARD_INNER);
+    // Is the built-in profile the active selection? (NVS "prof" empty)
+    preferences.begin("dashview", true);
+    bool builtinActive = preferences.getString("prof", "").length() == 0;
+    preferences.end();
+
+    if (!g_profileScanMounted) {
+        canvas.fillRoundRect(34, 272, 732, 42, 6, C_CARD_INNER);
+        canvas.drawRoundRect(34, 272, 732, 42, 6, canvas.color565(60, 100, 160));
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.setFont(&fonts::Font2);
+        canvas.drawCenterString("No SD card or no /profiles folder - built-in profile active", 400, 286);
+    } else {
+        // 4 cells: up to 3 scanned SD profiles + fixed BUILT-IN
+        const int cellX[4] = {34, 222, 410, 598};
+        canvas.setFont(&fonts::Font2);
+        for (int i = 0; i < 4; i++) {
+            bool active;
+            char label[24];
+            if (i < 3) {
+                if (i >= g_profileCount) {
+                    canvas.fillRoundRect(cellX[i], 272, 176, 42, 6, canvas.color565(18, 22, 30));
+                    canvas.drawRoundRect(cellX[i], 272, 176, 42, 6, canvas.color565(36, 44, 58));
+                    continue;
+                }
+                active = !builtinActive && strcmp(getProfileId(), g_profileIds[i]) == 0;
+                snprintf(label, sizeof(label), "%.18s", g_profileIds[i]);
+            } else {
+                active = builtinActive;
+                snprintf(label, sizeof(label), "BUILT-IN");
+            }
+            canvas.fillRoundRect(cellX[i], 272, 176, 42, 6, active ? C_TRD_RED : C_CARD_INNER);
+            canvas.drawRoundRect(cellX[i], 272, 176, 42, 6, active ? canvas.color565(255, 120, 120) : canvas.color565(60, 100, 160));
+            canvas.setTextColor(active ? C_TEXT_WHITE : C_TEXT_MUTED);
+            canvas.drawCenterString(label, cellX[i] + 88, 286);
+        }
+    }
+
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawCenterString("Settings auto-save to persistent flash storage (NVS)", 400, 358);
+    snprintf(buf, sizeof(buf), "Active: %s [%s]", getProfileName(), getProfileId());
+    canvas.drawString(buf, 34, 322);
+
+    // Card 4: Reboot Controller
+    // Box: x=12, y=358, w=776, h=52
+    canvas.fillRoundRect(12, 358, 776, 52, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 358, 776, 52, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 358, 6, 52, C_TRD_BURGUNDY);
+
+    canvas.fillRoundRect(34, 362, 732, 44, 6, canvas.color565(45, 18, 22));
+    canvas.drawRoundRect(34, 362, 732, 44, 6, C_TRD_BURGUNDY);
+    canvas.setTextColor(canvas.color565(255, 120, 120));
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString("REBOOT CONTROLLER", 400, 372);
 
     drawBottomNavBar();
 }
@@ -2032,18 +2151,31 @@ void handleTouch() {
             }
             // C. Page 5 (Settings Page)
             else if (currentScreen == SCREEN_SETTINGS) {
-                // Card 1: 180-deg Display Flip (y: 52 - 146)
-                if (touchLastY >= 52 && touchLastY <= 146) {
+                // Card 1: 180-deg Display Flip (y: 52 - 138)
+                if (touchLastY >= 52 && touchLastY <= 138) {
                     saveDisplayFlipSetting(!isDisplayFlipped);
                     return;
                 }
-                // Card 2: Backlight ON/OFF toggle (y: 158 - 252)
-                else if (touchLastY >= 158 && touchLastY <= 252) {
+                // Card 2: Backlight ON/OFF toggle (y: 146 - 232)
+                else if (touchLastY >= 146 && touchLastY <= 232) {
                     saveBacklightSetting(!backlightEnabled);
                     return;
                 }
-                // Card 3: Reboot Controller (y: 264 - 340)
-                else if (touchLastY >= 264 && touchLastY <= 340) {
+                // Card 3: Vehicle Profile cells (y: 272 - 314)
+                else if (touchLastY >= 272 && touchLastY <= 314 && g_profileScanMounted) {
+                    int cell = profileCellHit(touchLastX, touchLastY);
+                    if (cell >= 0) {
+                        if (cell == 3) {
+                            applyProfileSelection("");
+                        } else if (cell < g_profileCount) {
+                            if (!applyProfileSelection(g_profileIds[cell]))
+                                Serial.printf("[PROFILE] Select '%s' failed - keeping current profile.\n", g_profileIds[cell]);
+                        }
+                    }
+                    return;
+                }
+                // Card 4: Reboot Controller (y: 358 - 410)
+                else if (touchLastY >= 358 && touchLastY <= 410) {
                     Serial.println("[SETTINGS] Reboot requested -> Restarting ESP32...");
                     delay(200);
                     ESP.restart();
@@ -2202,6 +2334,7 @@ void setup() {
     // 7b. Vehicle profile override: /profiles/<id>.json on SD, id chosen in
     // NVS key "prof". The built-in default loaded in step 0 stays in effect
     // when no card / no selection / invalid JSON.
+    scanProfileDir();
     if (sdMounted) {
         preferences.begin("dashview", true);
         String profId = preferences.getString("prof", "");
@@ -2285,7 +2418,7 @@ void loop() {
     // MicroSD retry
     if (!sdMounted && (millis() - lastSdRetryTime >= 5000)) {
         lastSdRetryTime = millis();
-        mountSD();
+        if (mountSD()) scanProfileDir();
     }
 
     // Update Message Rate calculation
