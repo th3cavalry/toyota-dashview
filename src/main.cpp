@@ -12,6 +12,7 @@
 #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
 #include "version.h"
 #include "toyota_splash.h"
+#include "custom_dash.h"   // Custom Dash API (impl included later, post-palette)
 
 // Persistent Settings (Flash NVS)
 Preferences preferences;
@@ -213,12 +214,13 @@ unsigned long lastDisplayUpdate = 0;
 // 6 Dedicated Full-Color UI Screens
 enum DisplayScreen {
     SCREEN_DASHBOARD = 0,
-    SCREEN_SNIFFER   = 1,
-    SCREEN_LOGGER    = 2, // Dedicated Datalog & CAN Logger Control Page
-    SCREEN_WIFI      = 3,
-    SCREEN_SYSTEM    = 4,
-    SCREEN_SETTINGS  = 5, // Settings & 180-deg Display Flip Page
-    SCREEN_COUNT     = 6
+    SCREEN_CUSTOM    = 1, // Fully user-customizable gauge dash
+    SCREEN_SNIFFER   = 2,
+    SCREEN_LOGGER    = 3, // Dedicated Datalog & CAN Logger Control Page
+    SCREEN_WIFI      = 4,
+    SCREEN_SYSTEM    = 5,
+    SCREEN_SETTINGS  = 6, // Settings & 180-deg Display Flip Page
+    SCREEN_COUNT     = 7
 };
 DisplayScreen currentScreen = SCREEN_DASHBOARD;
 
@@ -369,31 +371,31 @@ void tryCanRecovery() {
     }
 }
 
-// Query only active selected PIDs
+// Query only active selected PIDs (plus anything the Custom Dash shows)
 void sendToyotaObdQueries() {
-    struct QueryItem {
-        uint8_t mode;
-        uint8_t pid;
-    };
-    QueryItem activeQueries[10];
+    uint8_t qMode[16];
+    uint8_t qPid[16];
     int queryCount = 0;
 
     for (size_t i = 0; i < PID_COUNT; i++) {
         if (availablePids[i].enabled && availablePids[i].mode != 0x00) {
             bool exists = false;
             for (int q = 0; q < queryCount; q++) {
-                if (activeQueries[q].mode == availablePids[i].mode && activeQueries[q].pid == availablePids[i].pid) {
+                if (qMode[q] == availablePids[i].mode && qPid[q] == availablePids[i].pid) {
                     exists = true;
                     break;
                 }
             }
-            if (!exists && queryCount < 10) {
-                activeQueries[queryCount].mode = availablePids[i].mode;
-                activeQueries[queryCount].pid = availablePids[i].pid;
+            if (!exists && queryCount < 16) {
+                qMode[queryCount] = availablePids[i].mode;
+                qPid[queryCount] = availablePids[i].pid;
                 queryCount++;
             }
         }
     }
+
+    // Gauges on the Custom Dash poll their PIDs even when datalogging off
+    cdAppendQueries(qMode, qPid, queryCount, 16);
 
     if (queryCount == 0) return;
 
@@ -407,8 +409,8 @@ void sendToyotaObdQueries() {
     memset(queryMsg.data, 0, 8);
 
     queryMsg.data[0] = 0x02;
-    queryMsg.data[1] = activeQueries[obdQueryIndex].mode;
-    queryMsg.data[2] = activeQueries[obdQueryIndex].pid;
+    queryMsg.data[1] = qMode[obdQueryIndex];
+    queryMsg.data[2] = qPid[obdQueryIndex];
 
     twai_transmit(&queryMsg, 0);
     obdQueryIndex = (obdQueryIndex + 1) % queryCount;
@@ -994,6 +996,11 @@ bool pollTouch(int &screenX, int &screenY) {
 #define C_TEXT_CYAN     canvas.color565(0, 220, 255)   // Ice Cyan Telemetry
 #define C_GREEN_OK      canvas.color565(40, 220, 100)  // Nominal Green
 #define C_GOLD_LOCK     canvas.color565(255, 205, 0)   // TCC Lock Gold
+
+// Custom Dash implementation (uses the palette + globals above)
+void drawHeaderBar(const char* title);
+void drawBottomNavBar();
+#include "custom_dash.inl"
 
 // =========================================================================
 // 800x480 UI Layout Constants (Waveshare 4.3B)
@@ -1797,6 +1804,7 @@ void updateDisplay() {
 
     switch (currentScreen) {
         case SCREEN_DASHBOARD: renderDashboard();     break;
+        case SCREEN_CUSTOM:    renderCustomDash();    break;
         case SCREEN_SNIFFER:   renderSniffer();       break;
         case SCREEN_LOGGER:    renderLoggerControl(); break;
         case SCREEN_WIFI:      renderWiFi();          break;
@@ -1853,15 +1861,22 @@ void handleTouch() {
             touchLastY  = touchY;
             touchStartTime = millis();
             Serial.printf("[TOUCH] Press at (%d, %d)\n", touchX, touchY);
+            if (currentScreen == SCREEN_CUSTOM) cdHandlePress(touchX, touchY);
         } else {
             touchLastX = touchX;
             touchLastY = touchY;
+            if (cdTouchActive()) cdHandleDrag(touchX, touchY);
         }
     } else if (wasTouched) {
         wasTouched = false;
         int deltaX = touchLastX - touchStartX;
         int deltaY = touchLastY - touchStartY;
         unsigned long duration = millis() - touchStartTime;
+
+        // Custom Dash drags / editor taps consume the whole gesture
+        if (currentScreen == SCREEN_CUSTOM || g_cdEditorKind != CD_EDIT_NONE) {
+            if (cdHandleRelease(touchLastX, touchLastY)) return;
+        }
 
         Serial.printf("[TOUCH] Release at (%d, %d) | deltaX=%d, deltaY=%d, dur=%lums\n", 
                       touchLastX, touchLastY, deltaX, deltaY, duration);
@@ -2150,6 +2165,12 @@ void setup() {
     initCAN();
     mountSD();
 
+    // 8. Custom Dash: load saved gauge layout + warning piezo
+    pinMode(CD_PIEZO_PIN, OUTPUT);
+    digitalWrite(CD_PIEZO_PIN, LOW);
+    cdLoadPrefs();
+    if (g_cdGaugeCount == 0) cdSeedDefaults();
+
     lastUserActivityTime = millis();
 }
 
@@ -2189,6 +2210,17 @@ void loop() {
     handleWiFiClients();
     processCAN();
     processDatalogging();
+
+    // Custom Dash warning cues: drive the piezo on GPIO6 (audible beep when
+    // any gauge with BEEP enabled is inside its warning band)
+    cdWarningTick();
+    if (g_cdWarnActive && g_cdPiezoEnabled) {
+        static unsigned long lastBeep = 0;
+        if (millis() - lastBeep > 500) {
+            lastBeep = millis();
+            tone(CD_PIEZO_PIN, 2400, 120);
+        }
+    }
 
     // Auto-Dim to 15% brightness after 60s of inactivity
     if (!isScreenDimmed && (millis() - lastUserActivityTime >= SCREEN_TIMEOUT_MS) && (millis() - lastCanActivityTime >= SCREEN_TIMEOUT_MS)) {
