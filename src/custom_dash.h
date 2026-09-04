@@ -6,7 +6,7 @@
 // move it (snapping to free cells) and drags its bottom-right corner to
 // resize. Gauges can show a live value as number+unit, a horizontal bar,
 // or a vertical bar. Per-gauge warning thresholds drive color, background
-// flash, and (optionally) a piezo beep.
+// and flash.
 //
 // Self-contained: defines its own enum values for the screens it checks so
 // it never depends on the main.cpp enum's declaration order, and references
@@ -50,7 +50,6 @@ struct CdGauge {
     float    warnLo, warnHi;   // warning band (outside => warn); warnHi<=-1e30 => disabled
     uint8_t  warnMode;         // CdWarning
     uint8_t  warnColor;        // CdColor
-    uint8_t  beep;             // 0 off / 1 on
     uint8_t  decimals;         // 0..2
     bool     valid;            // slot in use
 };
@@ -64,7 +63,6 @@ extern int             g_cdEditorIdx;         // gauge index when EDIT_GAUGE
 extern int             g_cdDragIdx;           // gauge being dragged (-1 none)
 extern int             g_cdDragMode;          // 0 none / 1 move / 2 resize
 extern int             g_cdDragOffX, g_cdDragOffY; // finger offset in cells*px
-extern uint8_t         g_cdPiezoEnabled;      // global beep master (NVS)
 
 // ---- Persistence ----------------------------------------------------------
 void cdLoadPrefs();
@@ -87,9 +85,3 @@ bool cdTouchActive();               // true while a drag is in progress
 bool cdHandlePress(int x, int y);   // called on press-down
 bool cdHandleDrag(int x, int y);    // called on move while dragging
 bool cdHandleRelease(int x, int y); // called on release; true = consumed
-
-// ---- Per-frame warning scan ----------------------------------------------
-void cdWarningTick();               // sets g_cdWarnActive for beeper
-
-// ---- Live warning state (read by setup() beeper) -------------------------
-extern volatile bool g_cdWarnActive;

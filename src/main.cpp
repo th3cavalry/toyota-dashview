@@ -2165,9 +2165,7 @@ void setup() {
     initCAN();
     mountSD();
 
-    // 8. Custom Dash: load saved gauge layout + warning piezo
-    pinMode(CD_PIEZO_PIN, OUTPUT);
-    digitalWrite(CD_PIEZO_PIN, LOW);
+    // 8. Custom Dash: load saved gauge layout
     cdLoadPrefs();
     if (g_cdGaugeCount == 0) cdSeedDefaults();
 
@@ -2210,17 +2208,6 @@ void loop() {
     handleWiFiClients();
     processCAN();
     processDatalogging();
-
-    // Custom Dash warning cues: drive the piezo on GPIO6 (audible beep when
-    // any gauge with BEEP enabled is inside its warning band)
-    cdWarningTick();
-    if (g_cdWarnActive && g_cdPiezoEnabled) {
-        static unsigned long lastBeep = 0;
-        if (millis() - lastBeep > 500) {
-            lastBeep = millis();
-            tone(CD_PIEZO_PIN, 2400, 120);
-        }
-    }
 
     // Auto-Dim to 15% brightness after 60s of inactivity
     if (!isScreenDimmed && (millis() - lastUserActivityTime >= SCREEN_TIMEOUT_MS) && (millis() - lastCanActivityTime >= SCREEN_TIMEOUT_MS)) {

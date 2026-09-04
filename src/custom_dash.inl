@@ -4,8 +4,6 @@
 // declared, so it references them directly. Do NOT compile standalone.
 // =========================================================================
 
-#define CD_PIEZO_PIN 6   // provably free GPIO (RGB/CAN/I2C/SD/TP all avoid 6)
-
 // ---- Module state definitions ---------------------------------------------
 CdGauge  g_cdGauges[CD_MAX_GAUGES];
 int      g_cdGaugeCount   = 0;
@@ -15,8 +13,6 @@ int      g_cdEditorIdx    = -1;
 int      g_cdDragIdx      = -1;
 int      g_cdDragMode     = 0;      // 1 move / 2 resize
 int      g_cdDragOffX = 0, g_cdDragOffY = 0;
-uint8_t  g_cdPiezoEnabled = 0;
-volatile bool g_cdWarnActive = false;
 
 // ---- Per-PID metadata (unit / default scale / decimals) -------------------
 struct CdMeta { const char* unit; float mn, mx; uint8_t dec; };
@@ -95,11 +91,10 @@ static bool cdOverlap(int idx, int x, int y, int w, int h) {
 // ---- Persistence ----------------------------------------------------------
 void cdLoadPrefs() {
     preferences.begin("dashview", true);
-    g_cdPiezoEnabled = (uint8_t)preferences.getUChar("cd_beep", 1);
-    int n = preferences.getUChar("cd_n", 0);
+    int n = preferences.getUChar("cd_n2", 0);
     if (n > CD_MAX_GAUGES) n = 0;
     uint8_t blob[sizeof(CdGauge) * CD_MAX_GAUGES];
-    size_t got = preferences.getBytes("cd_g", blob, sizeof(blob));
+    size_t got = preferences.getBytes("cd_g2", blob, sizeof(blob));
     preferences.end();
     g_cdGaugeCount = 0;
     for (int i = 0; i < CD_MAX_GAUGES; i++) g_cdGauges[i].valid = false;
@@ -107,13 +102,12 @@ void cdLoadPrefs() {
         memcpy(g_cdGauges, blob, got);
         g_cdGaugeCount = n;
     }
-    Serial.printf("[CDASH] Loaded %d gauges, beep=%u\n", g_cdGaugeCount, g_cdPiezoEnabled);
+    Serial.printf("[CDASH] Loaded %d gauges\n", g_cdGaugeCount);
 }
 void cdSavePrefs() {
     preferences.begin("dashview", false);
-    preferences.putUChar("cd_beep", g_cdPiezoEnabled);
-    preferences.putUChar("cd_n", (uint8_t)g_cdGaugeCount);
-    preferences.putBytes("cd_g", g_cdGauges, sizeof(CdGauge) * g_cdGaugeCount);
+    preferences.putUChar("cd_n2", (uint8_t)g_cdGaugeCount);
+    preferences.putBytes("cd_g2", g_cdGauges, sizeof(CdGauge) * g_cdGaugeCount);
     preferences.end();
     Serial.printf("[CDASH] Saved %d gauges\n", g_cdGaugeCount);
 }
@@ -123,7 +117,7 @@ static CdGauge cdDefaultGauge(int pidIdx, int cx, int cy, int cw, int ch) {
     CdMeta m = cdMeta(pidIdx);
     g.minVal = m.mn; g.maxVal = m.mx; g.decimals = m.dec;
     g.warnLo = m.mn; g.warnHi = -1e30f;      // warnings off by default
-    g.warnMode = CD_WARN_FLASH; g.warnColor = CD_COL_RED; g.beep = 0;
+    g.warnMode = CD_WARN_FLASH; g.warnColor = CD_COL_RED;
     return g;
 }
 // find first free cell scanning the grid for a w x h block
@@ -161,14 +155,6 @@ void cdAppendQueries(uint8_t modes[], uint8_t pids[], int& count, int cap) {
             if (modes[q] == availablePids[idx].mode && pids[q] == availablePids[idx].pid) { exists = true; break; }
         if (!exists) { modes[count] = availablePids[idx].mode; pids[count] = availablePids[idx].pid; count++; }
     }
-}
-
-// ---- Warning scan (drives beeper) -----------------------------------------
-void cdWarningTick() {
-    bool any = false;
-    for (int i = 0; i < g_cdGaugeCount; i++)
-        if (g_cdGauges[i].valid && g_cdGauges[i].beep && cdWarnOn(g_cdGauges[i])) { any = true; break; }
-    g_cdWarnActive = any;
 }
 
 // =========================================================================
@@ -394,17 +380,11 @@ void renderCustomDashEditor() {
         if (g.warnColor == i) canvas.drawCircle(bx + 16, e_rowY(3) + 20, 20, C_TEXT_WHITE);
     }
 
-    // Row 4: beep + decimals
+    // Row 4: decimals
     canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("BEEP", 34, e_rowY(4) + 12);
-    canvas.fillRoundRect(160, e_rowY(4), 120, 40, 6, g.beep ? C_GREEN_OK : C_CARD_BG);
-    canvas.drawRoundRect(160, e_rowY(4), 120, 40, 6, g.beep ? C_TEXT_WHITE : C_CARD_BORDER);
-    canvas.setTextColor(g.beep ? TFT_BLACK : C_TEXT_MUTED); canvas.setFont(&fonts::Font2);
-    canvas.drawCenterString(g.beep ? "ON" : "OFF", 220, e_rowY(4) + 12);
-    canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("DEC", 320, e_rowY(4) + 12);
+    canvas.drawString("DEC", 34, e_rowY(4) + 12);
     for (int i = 0; i < 3; i++) {
-        int bx = 396 + i * 70;
+        int bx = 160 + i * 70;
         bool on = g.decimals == i;
         snprintf(buf, sizeof(buf), "%d", i);
         canvas.fillRoundRect(bx, e_rowY(4), 62, 40, 6, on ? C_TEXT_CYAN : C_CARD_BG);
@@ -474,10 +454,8 @@ static void cdEditorHit(int x, int y) {
     for (int i = 0; i < 3; i++) if (inRect(x, y, 160 + i * 90, e_rowY(3), 82, 40)) { g.warnMode = i; cdSavePrefs(); return; }
     // color swatches
     for (int i = 0; i < 6; i++) if (inRect(x, y, 450 + i * 46, e_rowY(3), 46, 40)) { g.warnColor = i; cdSavePrefs(); return; }
-    // beep
-    if (inRect(x, y, 160, e_rowY(4), 120, 40)) { g.beep = g.beep ? 0 : 1; cdSavePrefs(); return; }
     // decimals
-    for (int i = 0; i < 3; i++) if (inRect(x, y, 396 + i * 70, e_rowY(4), 62, 40)) { g.decimals = i; cdSavePrefs(); return; }
+    for (int i = 0; i < 3; i++) if (inRect(x, y, 160 + i * 70, e_rowY(4), 62, 40)) { g.decimals = i; cdSavePrefs(); return; }
 }
 
 // =========================================================================
