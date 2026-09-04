@@ -333,9 +333,6 @@ void handleWiFiClients() {
 // =========================================================================
 // CAN Driver Initialization & Toyota OBD Queries
 // =========================================================================
-#define OBD_REQUEST_ID  0x7E0
-#define OBD_RESPONSE_ID 0x7E8
-
 void initCAN() {
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
@@ -403,7 +400,7 @@ void sendToyotaObdQueries() {
     obdQueryIndex = obdQueryIndex % queryCount;
 
     twai_message_t queryMsg;
-    queryMsg.identifier = OBD_REQUEST_ID;
+    queryMsg.identifier = getReqId();
     queryMsg.extd = 0;
     queryMsg.rtr = 0;
     queryMsg.data_length_code = 8;
@@ -432,7 +429,7 @@ unsigned long isotpStartedAt = 0;
 
 void sendIsotpFlowControl() {
     twai_message_t fc = {};
-    fc.identifier = OBD_REQUEST_ID;
+    fc.identifier = getReqId();
     fc.extd = 0;
     fc.rtr = 0;
     fc.data_length_code = 8;
@@ -533,7 +530,7 @@ bool handleObdIsoTp(const twai_message_t &msg) {
 }
 
 void decodeTacomaFrame(const twai_message_t &msg) {
-    if (msg.identifier == OBD_RESPONSE_ID && msg.data_length_code >= 1) {
+    if (msg.identifier == getRespId() && msg.data_length_code >= 1) {
         handleObdIsoTp(msg);
     }
     // Universal vehicle profile decode
@@ -1804,6 +1801,36 @@ void renderSettings() {
     drawBottomNavBar();
 }
 
+// Copy FRESH profile signals (decoded by profile.cpp from broadcasts and OBD
+// responses) into the legacy gauge struct. A signal is trusted only if it was
+// updated within the last 1.5 s, so stale values never overwrite live ones
+// when a profile omits a signal or the bus goes quiet.
+static void syncProfileSignals() {
+    unsigned long now = millis();
+    if (signalAge("rpm", now) < 1500)          vehicleData.rpm = (int)getSignal("rpm");
+    if (signalAge("speed", now) < 1500) {
+        vehicleData.speedMph = (int)getSignal("speed");
+    } else if (signalAge("speed_kmh", now) < 1500) {
+        vehicleData.speedMph = (int)(getSignal("speed_kmh") * 0.621371f);
+    }
+    if (signalAge("throttle", now) < 1500)       vehicleData.throttlePct = (int)getSignal("throttle");
+    if (signalAge("load", now) < 1500)           vehicleData.engineLoadPct = (int)getSignal("load");
+    if (signalAge("coolant", now) < 1500)        vehicleData.coolantTempC = (int)getSignal("coolant");
+    if (signalAge("iat", now) < 1500)            vehicleData.iatC = (int)getSignal("iat");
+    if (signalAge("maf", now) < 1500)            vehicleData.mafGps = getSignal("maf");
+    if (signalAge("timing", now) < 1500)         vehicleData.timingDeg = getSignal("timing");
+    if (signalAge("afr_actual", now) < 1500)     vehicleData.actualAfr = getSignal("afr_actual");
+    if (signalAge("afr_commanded", now) < 1500)  vehicleData.commandedAfr = getSignal("afr_commanded");
+    if (signalAge("kclv", now) < 1500)           vehicleData.kclv = getSignal("kclv");
+    if (signalAge("knockfb", now) < 1500)        vehicleData.knockFB = getSignal("knockfb");
+    if (signalAge("tcc_locked", now) < 1500)     vehicleData.tccLocked = getSignal("tcc_locked") >= 0.5f;
+    const char* g = (signalAge("gear", now) < 1500) ? getSignalText("gear") : nullptr;
+    if (g && g[0]) {
+        strncpy(vehicleData.gear, g, sizeof(vehicleData.gear) - 1);
+        vehicleData.gear[sizeof(vehicleData.gear) - 1] = '\0';
+    }
+}
+
 void updateDisplay() {
     canvas.fillScreen(C_DARK_BG);
 
@@ -2172,6 +2199,34 @@ void setup() {
     initCAN();
     mountSD();
 
+    // 7b. Vehicle profile override: /profiles/<id>.json on SD, id chosen in
+    // NVS key "prof". The built-in default loaded in step 0 stays in effect
+    // when no card / no selection / invalid JSON.
+    if (sdMounted) {
+        preferences.begin("dashview", true);
+        String profId = preferences.getString("prof", "");
+        preferences.end();
+        if (profId.length() > 0) {
+            char profPath[64];
+            snprintf(profPath, sizeof(profPath), "/profiles/%s.json", profId.c_str());
+            bool sdProfileLoaded = false;
+            if (SD.exists(profPath)) {
+                File pf = SD.open(profPath, FILE_READ);
+                if (pf) {
+                    String profJson = pf.readString();
+                    pf.close();
+                    sdProfileLoaded = loadProfile(profJson.c_str());
+                    if (!sdProfileLoaded)
+                        Serial.println("[PROFILE] SD profile JSON invalid - keeping built-in default.");
+                }
+            } else {
+                Serial.printf("[PROFILE] NVS profile '%s' not found on SD (%s) - using built-in default.\n", profId.c_str(), profPath);
+            }
+            if (sdProfileLoaded)
+                Serial.printf("[PROFILE] SD profile loaded: %s (%s)\n", getProfileName(), getProfileId());
+        }
+    }
+
     // 8. Custom Dash: load saved gauge layout
     cdLoadPrefs();
     if (g_cdGaugeCount == 0) cdSeedDefaults();
@@ -2243,6 +2298,7 @@ void loop() {
     // 30 FPS Display Refresh
     if (millis() - lastDisplayUpdate >= 33) {
         lastDisplayUpdate = millis();
+        syncProfileSignals();
         updateDisplay();
     }
 }
