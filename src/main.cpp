@@ -357,8 +357,46 @@ void initCAN() {
     }
 }
 
+// =========================================================================
+// TX failsafe: a moving vehicle's bus outranks our gauges. Any error
+// activity (error-passive alert or non-zero TX error counter) silences OBD
+// polling; it auto-resumes only after TXERROR_COOLDOWN_MS of clean bus.
+// =========================================================================
+static const unsigned long TXERROR_COOLDOWN_MS = 5000;
+static unsigned long txInhibitUntilMs = 0;
+static bool txInhibitLogged = false;
+
+static void noteTxError(const char* reason) {
+    txInhibitUntilMs = millis() + TXERROR_COOLDOWN_MS;
+    if (!txInhibitLogged) {
+        Serial.printf("[CAN-TX] SAFETY: OBD polling paused 5s (%s).\n", reason);
+        txInhibitLogged = true;
+    }
+}
+
+// Polls may only go out when: profile allows TX (not listen-only), the bus
+// has been quiet of TX errors for the cooldown window, and the controller is
+// error-active with near-zero TX error count.
+static bool obdTxCleared() {
+    if (isListenOnly()) return false;
+    if ((long)(millis() - txInhibitUntilMs) < 0) return false;
+    twai_status_info_t st;
+    if (twai_get_status_info(&st) == ESP_OK) {
+        if (st.state != TWAI_STATE_RUNNING || st.tx_error_counter > 8 || st.rx_error_counter > 8) {
+            noteTxError("TEC/REC elevated");
+            return false;
+        }
+    }
+    if (txInhibitLogged) {
+        Serial.println("[CAN-TX] Bus healthy -> OBD polling resumed.");
+        txInhibitLogged = false;
+    }
+    return true;
+}
+
 // Restart the TWAI peripheral after a bus-off (recovery requires stop/start).
 void tryCanRecovery() {
+    noteTxError("bus-off recovery");
     Serial.println("[CAN] Bus-off detected -> attempting TWAI recovery...");
     twai_stop();
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -2195,6 +2233,8 @@ void processCAN() {
     uint32_t alerts = 0;
     if (twai_read_alerts(&alerts, 0) == ESP_OK && alerts) {
         if (alerts & TWAI_ALERT_BUS_OFF) tryCanRecovery();
+        if (alerts & TWAI_ALERT_ERR_PASS)
+            noteTxError("error-passive");
         if (alerts & TWAI_ALERT_RX_QUEUE_FULL) {
             rxOverflowCount++;
             Serial.println("[CAN] RX queue full - frames dropped!");
@@ -2410,7 +2450,8 @@ void loop() {
     }
 
     // Periodic Toyota OBD-II active queries
-    if (millis() - lastCanActivityTime < 3000 && (millis() - lastObdQueryTime >= 250) && !isListenOnly()) {
+    // TX failsafe: obdTxCleared() pauses polling on any bus error activity.
+    if (millis() - lastCanActivityTime < 3000 && (millis() - lastObdQueryTime >= 250) && obdTxCleared()) {
         lastObdQueryTime = millis();
         sendToyotaObdQueries();
     }
