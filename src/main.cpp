@@ -6,6 +6,10 @@
 #include <Preferences.h>
 #include "driver/twai.h"
 #include <LovyanGFX.hpp>
+// LovyanGFX.hpp does not auto-include the RGB-panel classes (same includes
+// the bundled LGFX_Waveshare_ESP32S3_Touch_LCD_43 preset uses):
+#include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
+#include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
 #include "version.h"
 #include "toyota_splash.h"
 
@@ -16,6 +20,8 @@ bool backlightEnabled = true;  // Persistent: CH422G digital backlight (no PWM o
 
 // Forward decls (defined with the CH422G / display sections below)
 void backlightOn();
+void ch422gSetPin(uint8_t bit, bool level);
+bool rtcStamp(char* out, size_t len);
 void backlightOff();
 void pushCanvasToPanel();
 
@@ -83,9 +89,7 @@ public:
             cfg.vsync_pulse_width = 4;
             cfg.vsync_back_porch  = 16;
             cfg.pclk_active_neg   = 1;
-            cfg.pclk_idle_high    = 0;
-            // Bounce buffer keeps PSRAM bandwidth spikes from tearing the panel.
-            cfg.bounce_buffer_size_px = 800 * 10;
+            cfg.pclk_idle_high    = 1;  // matches LovyanGFX 4.3B preset
             _bus_instance.config(cfg);
         }
         _panel_instance.setBus(&_bus_instance);
@@ -117,12 +121,13 @@ LGFX_Sprite canvas(&tft); // PSRAM canvas; pushed to the panel at 30 FPS
 #define I2C_SCL_PIN        9
 #define TP_INT_PIN         4      // GT911 interrupt (also selects I2C addr at boot)
 
-// CH422G extended-IO bit positions (EXIO1..EXIO8 -> bits 0..7)
-#define EXIO_TP_RST        0
-#define EXIO_LCD_BL        1
-#define EXIO_LCD_RST       2
-#define EXIO_SD_CS         3
-#define EXIO_USB_SEL       4
+// CH422G extended-IO bit positions (bit index = EXIO number, per LovyanGFX's
+// LGFX_Waveshare_ESP32S3_Touch_LCD_43 preset)
+#define EXIO_TP_RST        1
+#define EXIO_LCD_BL        2
+#define EXIO_LCD_RST       3
+#define EXIO_SD_CS         4
+#define EXIO_USB_SEL       5
 
 // Screen Auto-Dim Timeout (60 Seconds)
 #define SCREEN_TIMEOUT_MS          60000
@@ -833,7 +838,7 @@ void initRtc() {
     Wire.beginTransmission(RTC_I2C_ADDR);
     Wire.write(0x04);
     if (Wire.endTransmission(false) != 0 ||
-        Wire.requestFrom(RTC_I2C_ADDR, (uint8_t)7) != 7) {
+        Wire.requestFrom((uint16_t)RTC_I2C_ADDR, (uint8_t)7) != 7) {
         Serial.println("[RTC] PCF85063 not found at 0x51 — logs use millis only.");
         return;
     }
@@ -873,7 +878,7 @@ RtcTime readRtc() {
     Wire.beginTransmission(RTC_I2C_ADDR);
     Wire.write(0x04);
     if (Wire.endTransmission(false) != 0 ||
-        Wire.requestFrom(RTC_I2C_ADDR, (uint8_t)7) != 7) {
+        Wire.requestFrom((uint16_t)RTC_I2C_ADDR, (uint8_t)7) != 7) {
         return t;
     }
     Wire.readBytes(regs, 7);
@@ -1632,7 +1637,8 @@ void renderSettings() {
     snprintf(buf, sizeof(buf), "MODE: %s (TAP TO FLIP)", isDisplayFlipped ? "FLIPPED 180 (INVERTED)" : "STANDARD 0 (NORMAL)");
     canvas.drawCenterString(buf, 160, 55);
 
-    // Card 2: Backlight Brightness
+    // Card 2: Backlight ON/OFF (4.3B backlight is a digital line on the
+    // CH422G expander — there is no PWM dimming on this board)
     // Box: x=12, y=86, w=296, h=56
     canvas.fillRoundRect(12, 86, 296, 56, 6, C_CARD_BG);
     canvas.drawRoundRect(12, 86, 296, 56, 6, C_CARD_BORDER);
@@ -1640,23 +1646,14 @@ void renderSettings() {
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_WHITE);
-    snprintf(buf, sizeof(buf), "Backlight Brightness (%d%%)", (int)((userBrightness * 100) / 255));
-    canvas.drawString(buf, 26, 90);
+    canvas.drawString("Backlight", 26, 90);
 
-    const uint8_t brLevels[4] = {64, 128, 192, 255};
-    const char* brLabels[4]   = {"25%", "50%", "75%", "100%"};
-    for (int i = 0; i < 4; i++) {
-        int bx = 26 + i * 68;
-        int by = 112;
-        bool isActive = (abs((int)userBrightness - (int)brLevels[i]) <= 32);
-        uint16_t bg = isActive ? C_TRD_ORANGE : C_CARD_INNER;
-        uint16_t border = isActive ? canvas.color565(255, 180, 50) : C_CARD_BORDER;
-        canvas.fillRoundRect(bx, by, 62, 24, 4, bg);
-        canvas.drawRoundRect(bx, by, 62, 24, 4, border);
-        canvas.setTextColor(isActive ? TFT_BLACK : C_TEXT_MUTED);
-        canvas.setFont(&fonts::Font2);
-        canvas.drawCenterString(brLabels[i], bx + 31, by + 4);
-    }
+    uint16_t blBtnBg = backlightEnabled ? C_TRD_ORANGE : C_CARD_INNER;
+    uint16_t blBtnBorder = backlightEnabled ? canvas.color565(255, 180, 50) : canvas.color565(60, 100, 160);
+    canvas.fillRoundRect(26, 112, 268, 24, 4, blBtnBg);
+    canvas.drawRoundRect(26, 112, 268, 24, 4, blBtnBorder);
+    canvas.setTextColor(backlightEnabled ? TFT_BLACK : C_TEXT_MUTED);
+    canvas.drawCenterString(backlightEnabled ? "STATE: ON (TAP TO OFF)" : "STATE: OFF (TAP TO ON)", 160, 116);
 
     // Card 3: Reboot Controller
     // Box: x=12, y=148, w=296, h=44
@@ -1877,16 +1874,9 @@ void handleTouch() {
                     saveDisplayFlipSetting(!isDisplayFlipped);
                     return;
                 }
-                // Card 2: Brightness Step Buttons (y: 106 - 140)
-                else if (touchLastY >= 106 && touchLastY <= 140) {
-                    const uint8_t brLevels[4] = {64, 128, 192, 255};
-                    for (int i = 0; i < 4; i++) {
-                        int bx = 26 + i * 68;
-                        if (touchLastX >= bx && touchLastX <= bx + 62) {
-                            saveBrightnessSetting(brLevels[i]);
-                            return;
-                        }
-                    }
+                // Card 2: Backlight ON/OFF toggle (y: 86 - 142)
+                else if (touchLastY >= 86 && touchLastY <= 142) {
+                    saveBacklightSetting(!backlightEnabled);
                     return;
                 }
                 // Card 3: Reboot Controller (y: 148 - 192)
