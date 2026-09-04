@@ -1248,13 +1248,13 @@ void renderDashboard() {
     snprintf(buf, sizeof(buf), "%u KB", ESP.getFreeHeap() / 1024);
     canvas.setTextColor(C_GREEN_OK);
     canvas.drawString(buf, 470, ribY + 8);
-    // RTC stamp
+    // RTC stamp (time only on the ribbon; full timestamp lives on Diagnostics)
     char stamp[24];
     if (rtcStamp(stamp, sizeof(stamp))) {
         canvas.setTextColor(C_TEXT_MUTED);
         canvas.drawString("RTC:", 580, ribY + 8);
         canvas.setTextColor(C_TEXT_WHITE);
-        canvas.drawString(stamp, 630, ribY + 8);
+        canvas.drawString(stamp + 11, 630, ribY + 8);  // skip "YYYY-MM-DD "
     }
 
     drawBottomNavBar();
