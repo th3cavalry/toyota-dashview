@@ -28,6 +28,10 @@ struct ProfileSignalDef {
     bool hasClampMax;
     float clampMax;
 
+    // Display metadata (from "unit" / "decimals")
+    char unit[12];
+    int8_t decimals;   // -1 = auto-derive from scale
+
     // Enum mapping
     uint8_t enumCount;
     EnumMapEntry enumMap[8];
@@ -337,6 +341,11 @@ bool loadProfile(const char* json) {
                     def.clampMax = sigObj["clamp_max"].as<float>();
                 }
             }
+
+            // Common display metadata (all kinds)
+            const char* unitStr = sigObj["unit"];
+            if (unitStr) strncpy(def.unit, unitStr, sizeof(def.unit) - 1);
+            def.decimals = (int8_t)(sigObj["decimals"] | -1);
         }
     }
 
@@ -398,6 +407,44 @@ const SignalValue* getSignalByIndex(int index) {
         return &s_signals[index].state;
     }
     return nullptr;
+}
+
+// Auto decimal places from the scale (e.g. 0.25 -> 2, 1.0 -> 0), max 2.
+static uint8_t autoDecimals(float scale) {
+    float a = fabsf(scale);
+    if (a <= 0.0f || a >= 1.0f) return 0;
+    uint8_t d = 0;
+    while (d < 2 && a < 1.0f) { a *= 10.0f; d++; }
+    return d;
+}
+
+bool getSignalMeta(const char* key, SignalMeta* out) {
+    if (!key || !out) return false;
+    for (int i = 0; i < s_signalCount; i++) {
+        if (strcmp(s_signals[i].key, key) != 0) continue;
+        const ProfileSignalDef& d = s_signals[i];
+        out->kind = d.kind;
+        strncpy(out->unit, d.unit, sizeof(out->unit) - 1);
+        out->unit[sizeof(out->unit) - 1] = 0;
+        out->decimals = (d.decimals >= 0) ? (uint8_t)d.decimals : autoDecimals(d.scale);
+        out->hasClampMin = d.hasClampMin; out->clampMin = d.clampMin;
+        out->hasClampMax = d.hasClampMax; out->clampMax = d.clampMax;
+        out->obdMode = d.obdMode; out->obdPid = d.obdPid;
+        return true;
+    }
+    return false;
+}
+
+bool profileSignalPollId(const char* key, uint8_t* mode, uint8_t* pid) {
+    if (!key) return false;
+    for (int i = 0; i < s_signalCount; i++) {
+        if (strcmp(s_signals[i].key, key) != 0) continue;
+        if (s_signals[i].kind != SIGNAL_KIND_OBD_POLL) return false;
+        if (mode) *mode = s_signals[i].obdMode;
+        if (pid)  *pid  = s_signals[i].obdPid;
+        return true;
+    }
+    return false;
 }
 
 bool onBroadcastFrame(uint32_t canId, const uint8_t* data, uint8_t len, unsigned long nowMs) {

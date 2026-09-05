@@ -29,6 +29,16 @@ struct SignalValue {
     bool valid;
 };
 
+// Static metadata for a decoded signal (drives Custom Dash gauge defaults)
+struct SignalMeta {
+    ProfileSignalKind kind;
+    char unit[12];
+    uint8_t decimals;          // 0..2; auto-derived from scale when unset
+    bool hasClampMin; float clampMin;
+    bool hasClampMax; float clampMax;
+    uint8_t obdMode; uint8_t obdPid;   // valid when kind == SIGNAL_KIND_OBD_POLL
+};
+
 // Profile lifecycle & signal accessors
 bool loadProfile(const char* json);
 bool loadDefaultProfile();
@@ -38,6 +48,9 @@ const char* getSignalText(const char* key, const char* defaultVal = "");
 unsigned long signalAge(const char* key, unsigned long nowMs = 0);
 int getSignalCount();
 const SignalValue* getSignalByIndex(int index);
+bool getSignalMeta(const char* key, SignalMeta* out);
+// True when the signal is polled (kind obd_poll): fills its request mode/pid.
+bool profileSignalPollId(const char* key, uint8_t* mode, uint8_t* pid);
 
 // CAN broadcast & OBD response decode hooks
 bool onBroadcastFrame(uint32_t canId, const uint8_t* data, uint8_t len, unsigned long nowMs = 0);
