@@ -59,9 +59,10 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
 
 1. **Custom Dash gauges are still a hardcoded table.** `src/custom_dash.inl`
    `cdGetValue()` maps uppercase names ("RPM","SPEED",...) to `vehicleData`.
-   Next phase: drive gauges from `getSignalCount()`/`getSignalByIndex()` so any
+   **DONE:** drive gauges from `getSignalCount()`/`getSignalByIndex()` so any
    profile's signals appear without firmware changes. Gauge↔signal key naming
    needs a mapping convention (profile keys are lowercase snake_case).
+   `cdAppendQueries()` now polls profile signals (if they are `obd_poll` kind).
 2. ~~`isListenOnly()` unused~~ DONE: OBD polling gated by `obdTxCleared()` TX
    failsafe — polls only go out when the profile allows TX, at least one
    gauge/logger actually requires a PID (necessity gate in
