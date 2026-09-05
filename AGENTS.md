@@ -130,11 +130,10 @@ source /opt/data/pio-venv/bin/activate
 cd /opt/data/dashview && pio run          # SUCCESS = deployable
 bash tests/native/run.sh                  # profile-engine unit tests (no HW)
 
-# Hardware access via FlowZ13 bridge (board is plugged into FlowZ13):
-waveshare-status                          # check board status (or esptool.py chip_id / lsusb)
-pio run -e waveshare-touch-43b -t upload  # build and flash over LAN to FlowZ13:5050
-waveshare-logs -f                         # stream live serial monitor
-waveshare-reset                           # remote hard reset
+# Direct hardware access on Zimaboard 2:
+pio run -e waveshare-touch-43b -t upload  # build and flash directly to /dev/ttyACM0
+pio device monitor -p /dev/ttyACM0 -b 115200 # live serial monitor
+/opt/data/pio-venv/bin/esptool.py --port /dev/ttyACM0 chip_id # check device status
 ```
-Verification = native tests green + clean build + bench flash via FlowZ13 bridge. SD card: FAT32 via
+Verification = native tests green + clean build + bench flash via local /dev/ttyACM0. SD card: FAT32 via
 `format_sd.sh`, logs at root, profiles in `/profiles/`.

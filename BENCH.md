@@ -4,20 +4,23 @@ Firmware: `.pio/build/waveshare-touch-43b/firmware.bin` (md5 `02cce2b5...`, head
 Serial: 115200, USB-CDC (`ARDUINO_USB_CDC_ON_BOOT=1`) — the port is the ESP32 itself.
 
 ## 0. Flash & Monitor Setup
-The board is physically connected via USB to FlowZ13 (`192.168.8.20`) and bridged over LAN via the `waveshare-bridge` HTTP service (port 5050).
+The board is physically connected via USB directly to Zimaboard 2 at `/dev/ttyACM0`. The container runs with `--privileged` and device cgroup rules (`c 166:* rmw`).
 
-Commands available inside Hermes:
-- **Check device status**: `waveshare-status`
+Commands:
 - **Build & Flash via PlatformIO**:
   ```bash
   source /opt/data/pio-venv/bin/activate
   cd /opt/data/dashview
   pio run -e waveshare-touch-43b -t upload
   ```
-- **Direct Flash**: `waveshare-flash [path/to/firmware.bin]`
-- **Live Serial Stream**: `waveshare-logs -f`
-- **Recent Serial Logs**: `waveshare-logs 50`
-- **Remote Hard Reset**: `waveshare-reset`
+- **Live Serial Monitor**:
+  ```bash
+  pio device monitor -p /dev/ttyACM0 -b 115200
+  ```
+- **Check Device / Hardware**:
+  ```bash
+  /opt/data/pio-venv/bin/esptool.py --port /dev/ttyACM0 chip_id
+  ```
 
 ## 1. Boot smoke (no vehicle, just power)
 - [ ] Backlight on, TRD splash appears; tap to dismiss
