@@ -123,13 +123,18 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
 - ESP32 SdFat: `entry.name()` returns full path ("/profiles/foo.json").
 - Signal freshness check: `signalAge(key, millis()) < 1500`.
 
-## Build / test
+## Build / test & Bench Flashing
 
 ```bash
 source /opt/data/pio-venv/bin/activate
 cd /opt/data/dashview && pio run          # SUCCESS = deployable
 bash tests/native/run.sh                  # profile-engine unit tests (no HW)
-pio run -t upload -t monitor              # USB CDC (ARDUINO_USB_CDC_ON_BOOT=1)
+
+# Hardware access via FlowZ13 bridge (board is plugged into FlowZ13):
+waveshare-status                          # check board status (or esptool.py chip_id / lsusb)
+pio run -e waveshare-touch-43b -t upload  # build and flash over LAN to FlowZ13:5050
+waveshare-logs -f                         # stream live serial monitor
+waveshare-reset                           # remote hard reset
 ```
-Verification = native tests green + clean build + bench flash. SD card: FAT32 via
+Verification = native tests green + clean build + bench flash via FlowZ13 bridge. SD card: FAT32 via
 `format_sd.sh`, logs at root, profiles in `/profiles/`.
