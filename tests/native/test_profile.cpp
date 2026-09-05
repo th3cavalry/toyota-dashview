@@ -102,6 +102,15 @@ static void test_bad_json() {
     CHECK(!loadProfile("{ not json"), "garbage rejected");
     CHECK(!loadProfile("{}"), "empty object rejected");
     CHECK(!loadProfile(nullptr), "null rejected");
+    // metadata must NOT leak from the previous profile (Copilot review #4)
+    loadDefaultProfile();  // tacoma: req 0x7E0, listen_only false
+    CHECK(loadProfile(R"({"id":"min","signals":[{"key":"x","kind":"obd_poll","mode":"0x01","pid":"0x0D"}]})"),
+          "minimal profile loads");
+    CHECK(!strcmp(getProfileId(), "min"), "id replaced=%s", getProfileId());
+    CHECK(getReqId() == 0x7E0 && getRespId() == 0x7E8, "bus ids reset to defaults");
+    CHECK(isListenOnly(), "listen_only reset to safe default when bus section missing");
+    CHECK(getProfileLogo()[0] == 0, "logo from previous profile cleared");
+    loadDefaultProfile();  // restore for test order
     // 60 signals > PROFILE_MAX 48 must not crash; extra entries dropped
     char buf[8192]; int n = snprintf(buf, sizeof(buf), "{\"id\":\"huge\",\"signals\":[");
     for (int i = 0; i < 60; i++)

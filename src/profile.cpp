@@ -219,6 +219,18 @@ bool loadDefaultProfile() {
     return loadProfile(kDefaultToyotaProfile);
 }
 
+static void resetProfileState() {
+    s_signalCount = 0;
+    memset(s_signals, 0, sizeof(s_signals));
+    s_profileId[0] = s_profileName[0] = s_profileLogo[0] = s_profileBrandColor[0] = 0;
+    s_isCanFd = false;
+    s_arbBitrate = 500000;
+    s_reqId = 0x7E0;
+    s_respId = 0x7E8;
+    s_funcId = 0x7DF;
+    s_listenOnly = true;
+}
+
 bool loadProfile(const char* json) {
     if (!json || json[0] == 0) return false;
 
@@ -233,9 +245,9 @@ bool loadProfile(const char* json) {
         return false;
     }
 
-    // Reset signal table
-    s_signalCount = 0;
-    memset(s_signals, 0, sizeof(s_signals));
+    // Clean slate: a new profile must never inherit metadata/bus fields the
+    // previous one set but this one omits.
+    resetProfileState();
 
     // Profile metadata
     const char* idStr = doc["id"];

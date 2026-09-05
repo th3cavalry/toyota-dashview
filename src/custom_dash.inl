@@ -77,8 +77,16 @@ static bool cdSigVal(const CdGauge& g, float& v) {
     v = getSignal(g.sigKey);
     return true;
 }
-// enum text ("" when the signal is numeric or stale)
-static const char* cdSigText(const CdGauge& g) { return getSignalText(g.sigKey); }
+// enum text ("" when the signal is numeric or stale) — same 2 s gate as
+// cdSigVal so a gauge can't keep showing old enum text off the bus
+static char s_cdSigTextBuf[PROFILE_TEXT_MAX_LEN];
+static const char* cdSigText(const CdGauge& g) {
+    s_cdSigTextBuf[0] = 0;
+    if (signalAge(g.sigKey, millis()) >= 2000) return s_cdSigTextBuf;
+    strncpy(s_cdSigTextBuf, getSignalText(g.sigKey), sizeof(s_cdSigTextBuf) - 1);
+    s_cdSigTextBuf[sizeof(s_cdSigTextBuf) - 1] = 0;
+    return s_cdSigTextBuf;
+}
 static uint16_t cdColor(CdColor c) {
     switch (c) {
         case CD_COL_CYAN:   return C_TEXT_CYAN;

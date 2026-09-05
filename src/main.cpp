@@ -1880,28 +1880,31 @@ void renderSystem() {
 
 // Load /profiles/<id>.json from SD into the profile engine and persist the
 // choice in NVS ("prof"). id empty = clear selection, revert to built-in.
+// NVS is written ONLY after the profile validates, so a typo'd or corrupt
+// file can never leave NVS pointing at a selection that won't load.
 static bool applyProfileSelection(const char* id) {
+    if (id && id[0] != 0) {
+        if (!sdMounted) return false;
+        char profPath[64];
+        snprintf(profPath, sizeof(profPath), "/profiles/%s.json", id);
+        if (!SD.exists(profPath)) return false;
+        File pf = SD.open(profPath, FILE_READ);
+        if (!pf) return false;
+        String profJson = pf.readString();
+        pf.close();
+        if (!loadProfile(profJson.c_str())) {
+            Serial.println("[PROFILE] Profile JSON invalid - selection kept, built-in still active.");
+            return false;
+        }
+        Serial.printf("[PROFILE] Profile active: %s (%s)\n", getProfileName(), getProfileId());
+    } else {
+        loadDefaultProfile();
+        Serial.printf("[PROFILE] Reverted to built-in: %s (%s)\n", getProfileName(), getProfileId());
+        id = "";
+    }
     preferences.begin("dashview", false);
     preferences.putString("prof", id ? id : "");
     preferences.end();
-    if (!id || id[0] == 0) {
-        loadDefaultProfile();
-        Serial.printf("[PROFILE] Reverted to built-in: %s (%s)\n", getProfileName(), getProfileId());
-        return true;
-    }
-    if (!sdMounted) return false;
-    char profPath[64];
-    snprintf(profPath, sizeof(profPath), "/profiles/%s.json", id);
-    if (!SD.exists(profPath)) return false;
-    File pf = SD.open(profPath, FILE_READ);
-    if (!pf) return false;
-    String profJson = pf.readString();
-    pf.close();
-    if (!loadProfile(profJson.c_str())) {
-        Serial.println("[PROFILE] Profile JSON invalid - selection kept, built-in still active.");
-        return false;
-    }
-    Serial.printf("[PROFILE] Profile active: %s (%s)\n", getProfileName(), getProfileId());
     return true;
 }
 
