@@ -95,7 +95,16 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
    year) — currently selection is manual via Settings.
 7. **Profile JSON size**: `pf.readString()` loads the whole file into a String
    (~5 KB typical, fine) — revisit if profiles grow past ~64 KB free heap.
-8. Datalog CSV columns still tied to legacy PID list, not profile signals.
+8. ~~Datalog CSV columns still tied to legacy PID list~~ DONE: datalogger is
+   fully profile-driven. CSV columns = selected profile signals in profile
+   order (enum signals write text, values format via SignalMeta decimals,
+   cells blank past a 5 s staleness gate — longer than the display's 1.5 s
+   because the poller rotates ~11 queries at 4/s). Poll set derives from the
+   selection via `profileSignalPollId()`. Selection persists by signal KEY in
+   NVS (`dl_sel` + `dl_prof` + `dl_set`); a selection saved under a foreign
+   profile that matches nothing falls back to log-everything, while an
+   explicit empty pick (NONE) is honored. Picker pages the live signal table
+   (21/page). `availablePids[]` now only backs Custom Dash *legacy* gauges.
 
 ## Conventions & gotchas
 
@@ -104,6 +113,9 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
 - `preferences` is the global Preferences instance; namespace "dashview"; keys:
   `flip180`, `bl_on`, `prof`, per-prefix log counters.
 - NVS writes need `preferences.begin("dashview", false)` … `.end()`; reads `true`.
+- Datalog selection is by profile signal KEY (`dl_sel` CSV string, `dl_set`
+  flag, `dl_prof` provenance) — never by signal index; indices shift when the
+  profile hot-swaps.
 - UI style: `C_CARD_BG/CARD_BORDER/CARD_INNER/C_TRD_RED/C_TEXT_MUTED`, Font2
   labels + Font4 buttons, 800x480, navbar at bottom 40 px, header top 44 px.
 - Legacy decode paths are intentionally kept during migration; profile wins by

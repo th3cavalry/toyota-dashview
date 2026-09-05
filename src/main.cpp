@@ -175,6 +175,106 @@ DatalogPid availablePids[] = {
 #define PID_COUNT (sizeof(availablePids) / sizeof(availablePids[0]))
 
 bool isPidConfigOpen = false;        // Is the PID selection modal/view open
+
+// ---- Datalog selection by PROFILE SIGNAL KEY (NVS: "dl_set" + "dl_sel") ----
+// Datalog columns, polls, and the picker all follow the active vehicle
+// profile; selection is stored by key (indices shift between profiles).
+// g_dlSelCount == -1 => no explicit choice yet: every signal is logged.
+// If a profile hot-swap leaves zero selected keys present, we fall back to
+// logging everything rather than writing an empty CSV.
+static char g_dlSel[PROFILE_MAX_SIGNALS][24];
+static int  g_dlSelCount  = -1;
+static bool g_dlSelLoaded = false;
+static char g_dlSelProf[24] = "";   // profile the selection was made against
+
+static void dlSelSave() {
+    String s;
+    for (int i = 0; i < g_dlSelCount; i++) { if (i) s += ','; s += g_dlSel[i]; }
+    preferences.begin("dashview", false);
+    preferences.putBool("dl_set", g_dlSelCount >= 0);
+    preferences.putString("dl_sel", s);
+    preferences.putString("dl_prof", getProfileId());
+    preferences.end();
+    strncpy(g_dlSelProf, getProfileId(), sizeof(g_dlSelProf) - 1);
+}
+static void dlSelLoad() {
+    if (g_dlSelLoaded) return;
+    g_dlSelLoaded = true;
+    preferences.begin("dashview", true);
+    bool set = preferences.getBool("dl_set", false);
+    String s = preferences.getString("dl_sel", "");
+    preferences.getString("dl_prof", "").toCharArray(g_dlSelProf, sizeof(g_dlSelProf));
+    preferences.end();
+    g_dlSelCount = set ? 0 : -1;
+    if (!set) return;
+    int start = 0;
+    while (start < (int)s.length() && g_dlSelCount < PROFILE_MAX_SIGNALS) {
+        int comma = s.indexOf(',', start);
+        if (comma < 0) comma = s.length();
+        if (comma > start) {
+            s.substring(start, comma).toCharArray(g_dlSel[g_dlSelCount], sizeof(g_dlSel[0]));
+            g_dlSel[g_dlSelCount][sizeof(g_dlSel[0]) - 1] = 0;
+            g_dlSelCount++;
+        }
+        start = comma + 1;
+    }
+}
+static bool dlSelEnabledKey(const char* key) {
+    for (int i = 0; i < g_dlSelCount; i++)
+        if (!strcmp(g_dlSel[i], key)) return true;
+    return false;
+}
+static void dlSelMaterialize() {  // expand "all" (-1) into explicit current keys
+    if (g_dlSelCount >= 0) return;
+    g_dlSelCount = 0;
+    for (int i = 0; i < getSignalCount() && g_dlSelCount < PROFILE_MAX_SIGNALS; i++) {
+        const SignalValue* s = getSignalByIndex(i);
+        if (!s) continue;
+        strncpy(g_dlSel[g_dlSelCount], s->key, sizeof(g_dlSel[0]) - 1);
+        g_dlSel[g_dlSelCount][sizeof(g_dlSel[0]) - 1] = 0;
+        g_dlSelCount++;
+    }
+}
+static void dlSelToggleSig(int sigIdx) {
+    const SignalValue* s = getSignalByIndex(sigIdx);
+    if (!s) return;
+    dlSelLoad();
+    dlSelMaterialize();
+    for (int i = 0; i < g_dlSelCount; i++) {
+        if (strcmp(g_dlSel[i], s->key)) continue;
+        for (int j = i; j < g_dlSelCount - 1; j++) strcpy(g_dlSel[j], g_dlSel[j + 1]);
+        g_dlSelCount--;
+        dlSelSave();
+        return;
+    }
+    if (g_dlSelCount < PROFILE_MAX_SIGNALS) {
+        strncpy(g_dlSel[g_dlSelCount], s->key, sizeof(g_dlSel[0]) - 1);
+        g_dlSel[g_dlSelCount][sizeof(g_dlSel[0]) - 1] = 0;
+        g_dlSelCount++;
+    }
+    dlSelSave();
+}
+static void dlSelAll()  { dlSelLoad(); g_dlSelCount = -1; dlSelSave(); }
+static void dlSelNone() { dlSelLoad(); g_dlSelCount = 0;  dlSelSave(); }
+static bool dlSelAnyInProfile() {  // does the explicit selection hit the profile?
+    for (int i = 0; i < getSignalCount(); i++) {
+        const SignalValue* s = getSignalByIndex(i);
+        if (s && dlSelEnabledKey(s->key)) return true;
+    }
+    return false;
+}
+// Master question for column/poll/UI: is this signal logged right now?
+// A stored selection made against a DIFFERENT profile that matches nothing
+// here (e.g. tacoma picks, then swap to a Honda) falls back to logging
+// everything; an explicit selection on the current profile is always honored,
+// including the empty one (NONE).
+static bool dlLogThis(const char* key) {
+    dlSelLoad();
+    if (g_dlSelCount < 0) return true;
+    if (dlSelEnabledKey(key)) return true;
+    if (strcmp(g_dlSelProf, getProfileId()) != 0 && !dlSelAnyInProfile()) return true;
+    return false;
+}
 bool isRawSnifferModalOpen = false;  // Is the floating raw packet terminal modal open
 bool isSnifferPaused = false;        // Freeze live frame view for inspection
 bool isBootSplashActive = true;      // Keep boot splash until screen tapped or engine starts (RPM > 0)
@@ -407,27 +507,23 @@ void tryCanRecovery() {
     }
 }
 
-// Query only active selected PIDs (plus anything the Custom Dash shows)
+// Query only what the log needs (profile signals marked for logging, mapped
+// to their poll ids) plus anything the Custom Dash shows.
 void sendToyotaObdQueries() {
     uint8_t qMode[16];
     uint8_t qPid[16];
     int queryCount = 0;
 
-    for (size_t i = 0; i < PID_COUNT; i++) {
-        if (availablePids[i].enabled && availablePids[i].mode != 0x00) {
-            bool exists = false;
-            for (int q = 0; q < queryCount; q++) {
-                if (qMode[q] == availablePids[i].mode && qPid[q] == availablePids[i].pid) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists && queryCount < 16) {
-                qMode[queryCount] = availablePids[i].mode;
-                qPid[queryCount] = availablePids[i].pid;
-                queryCount++;
-            }
-        }
+    // Profile-driven polls: every obd_poll signal the logger has selected.
+    for (int i = 0; i < getSignalCount(); i++) {
+        const SignalValue* s = getSignalByIndex(i);
+        if (!s || !dlLogThis(s->key)) continue;
+        uint8_t m, p;
+        if (!profileSignalPollId(s->key, &m, &p)) continue;  // broadcast = no poll
+        bool exists = false;
+        for (int q = 0; q < queryCount; q++)
+            if (qMode[q] == m && qPid[q] == p) { exists = true; break; }
+        if (!exists && queryCount < 16) { qMode[queryCount] = m; qPid[queryCount] = p; queryCount++; }
     }
 
     // Gauges on the Custom Dash poll their PIDs even when datalogging off
@@ -660,11 +756,12 @@ String generateUniqueFileName(const char* prefix) {
     return path;
 }
 
-// Count active PIDs
+// Count active PIDs (profile signals the logger will write)
 int getActivePidCount() {
     int count = 0;
-    for (size_t i = 0; i < PID_COUNT; i++) {
-        if (availablePids[i].enabled) count++;
+    for (int i = 0; i < getSignalCount(); i++) {
+        const SignalValue* s = getSignalByIndex(i);
+        if (s && dlLogThis(s->key)) count++;
     }
     return count;
 }
@@ -730,13 +827,12 @@ bool startDataLogger() {
         char stamp[24];
         activeLogFile.printf("# RTC: %s (fallback = millis since boot)\n",
                              rtcStamp(stamp, sizeof(stamp)) ? stamp : "unset");
-        // Build dynamic CSV header with only selected PIDs
+        // CSV columns = the profile signals selected for logging, in profile
+        // order, so any vehicle profile's signals land in the file untouched.
         String header = "Timestamp_ms";
-        for (size_t i = 0; i < PID_COUNT; i++) {
-            if (availablePids[i].enabled) {
-                header += ",";
-                header += availablePids[i].header;
-            }
+        for (int i = 0; i < getSignalCount(); i++) {
+            const SignalValue* s = getSignalByIndex(i);
+            if (s && dlLogThis(s->key)) { header += ','; header += s->key; }
         }
         activeLogFile.println(header);
         activeLogFile.flush();
@@ -1493,58 +1589,59 @@ void renderSniffer() {
 }
 
 // Sub-Screen: Interactive PID Selector Modal
+// Pages the ACTIVE PROFILE's signals (up to 21 per page, 3x7 grid).
+#define DL_PICKER_PER_PAGE 21
+int g_dlPickerPage = 0;
+
 void renderPidSelector() {
     char titleBuf[48];
-    snprintf(titleBuf, sizeof(titleBuf), "SELECT DATALOG PIDs (%d/%d)", getActivePidCount(), (int)PID_COUNT);
+    int total = getSignalCount();
+    int pages = (total + DL_PICKER_PER_PAGE - 1) / DL_PICKER_PER_PAGE;
+    if (g_dlPickerPage >= pages) g_dlPickerPage = 0;
+    snprintf(titleBuf, sizeof(titleBuf), "SELECT DATALOG SIGNALS pg %d/%d (%d logged)",
+             g_dlPickerPage + 1, pages < 1 ? 1 : pages, getActivePidCount());
     drawHeaderBar(titleBuf);
 
     int startY = 52;
     int rowHeight = 42;
     int colWidth = 250;
 
-    for (size_t i = 0; i < PID_COUNT; i++) {
-        int col = (i % 3);
-        int row = (i / 3);
+    for (int slot = 0; slot < DL_PICKER_PER_PAGE; slot++) {
+        int sigIdx = g_dlPickerPage * DL_PICKER_PER_PAGE + slot;
+        const SignalValue* s = getSignalByIndex(sigIdx);
+        if (!s) break;
+        bool on = dlLogThis(s->key);
+        SignalMeta m{};
+        getSignalMeta(s->key, &m);
+        int col = (slot % 3);
+        int row = (slot / 3);
         int bx = 12 + col * (colWidth + 8);
         int by = startY + row * (rowHeight + 6);
 
-        uint16_t boxBg = availablePids[i].enabled ? canvas.color565(32, 18, 24) : C_CARD_BG;
-        uint16_t boxBorder = availablePids[i].enabled ? C_TRD_RED : C_CARD_BORDER;
-        uint16_t txtColor = availablePids[i].enabled ? C_TEXT_WHITE : C_TEXT_MUTED;
-
-        canvas.fillRoundRect(bx, by, colWidth, rowHeight, 6, boxBg);
-        canvas.drawRoundRect(bx, by, colWidth, rowHeight, 6, boxBorder);
-
+        canvas.fillRoundRect(bx, by, colWidth, rowHeight, 6, on ? canvas.color565(32, 18, 24) : C_CARD_BG);
+        canvas.drawRoundRect(bx, by, colWidth, rowHeight, 6, on ? C_TRD_RED : C_CARD_BORDER);
         canvas.setFont(&fonts::Font2);
-        canvas.setTextColor(availablePids[i].enabled ? C_TRD_RED : C_TEXT_MUTED);
-        canvas.drawString(availablePids[i].enabled ? "[X]" : "[ ]", bx + 10, by + 13);
-
-        canvas.setTextColor(txtColor);
-        canvas.drawString(availablePids[i].label, bx + 46, by + 13);
+        canvas.setTextColor(on ? C_TRD_RED : C_TEXT_MUTED);
+        canvas.drawString(on ? "[X]" : "[ ]", bx + 10, by + 13);
+        canvas.setTextColor(on ? C_TEXT_WHITE : C_TEXT_MUTED);
+        char lbl[32];
+        if (m.unit[0]) snprintf(lbl, sizeof(lbl), "%.18s (%.6s)", s->key, m.unit);
+        else           snprintf(lbl, sizeof(lbl), "%.20s", s->key);
+        canvas.drawString(lbl, bx + 46, by + 13);
     }
 
     int botActionY = 412;
-
-    // [ ALL ] Button
-    canvas.fillRoundRect(12, botActionY, 160, 44, 6, canvas.color565(25, 35, 52));
-    canvas.drawRoundRect(12, botActionY, 160, 44, 6, canvas.color565(60, 110, 180));
+    struct { int x, w; const char* t; } btns[] = {
+        { 12,  100, "<"}, { 124, 100, ">"}, { 236, 140, "ALL"},
+        { 388, 140, "NONE" }, { 540, 248, "DONE" }
+    };
     canvas.setTextColor(C_TEXT_WHITE);
     canvas.setFont(&fonts::Font4);
-    canvas.drawCenterString("ALL", 92, botActionY + 8);
-
-    // [ NONE ] Button
-    canvas.fillRoundRect(184, botActionY, 160, 44, 6, canvas.color565(45, 20, 25));
-    canvas.drawRoundRect(184, botActionY, 160, 44, 6, C_TRD_BURGUNDY);
-    canvas.setTextColor(C_TEXT_WHITE);
-    canvas.setFont(&fonts::Font4);
-    canvas.drawCenterString("NONE", 264, botActionY + 8);
-
-    // [ SAVE & RETURN ] Button
-    canvas.fillRoundRect(356, botActionY, 432, 44, 6, C_TRD_RED);
-    canvas.drawRoundRect(356, botActionY, 432, 44, 6, canvas.color565(255, 100, 100));
-    canvas.setTextColor(C_TEXT_WHITE);
-    canvas.setFont(&fonts::Font4);
-    canvas.drawCenterString("SAVE & RETURN", 572, botActionY + 8);
+    for (auto& b : btns) {
+        canvas.fillRoundRect(b.x, botActionY, b.w, 44, 6, canvas.color565(25, 35, 52));
+        canvas.drawRoundRect(b.x, botActionY, b.w, 44, 6, canvas.color565(60, 110, 180));
+        canvas.drawCenterString(b.t, b.x + b.w / 2, botActionY + 8);
+    }
 }
 
 // Page 2: Dedicated PID Vehicle Datalogger & Parameter Recording Deck
@@ -1595,16 +1692,18 @@ void renderLoggerControl() {
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_WHITE);
-    snprintf(buf, sizeof(buf), "Active Parameters (%d of %d Selected):", getActivePidCount(), (int)PID_COUNT);
+    snprintf(buf, sizeof(buf), "Active Parameters (%d Selected):", getActivePidCount());
     canvas.drawString(buf, 34, 156);
 
-    // Build list of active PID tags (all fit on one 800px-wide line)
+    // Build list of active signal keys (profile-driven; truncated to fit)
     String tagList = "";
     int count = 0;
-    for (size_t i = 0; i < PID_COUNT; i++) {
-        if (availablePids[i].enabled) {
+    for (int i = 0; i < getSignalCount(); i++) {
+        const SignalValue* s = getSignalByIndex(i);
+        if (s && dlLogThis(s->key)) {
+            if (tagList.length() > 560) { tagList += "..."; break; }
             tagList += "[";
-            tagList += availablePids[i].idStr;
+            tagList += s->key;
             tagList += "] ";
             count++;
         }
@@ -2140,27 +2239,35 @@ void handleTouch() {
                     int rowHeight = 42;
                     int colWidth = 250;
 
-                    for (size_t i = 0; i < PID_COUNT; i++) {
-                        int col = (i % 3);
-                        int row = (i / 3);
+                    for (int slot = 0; slot < DL_PICKER_PER_PAGE; slot++) {
+                        int sigIdx = g_dlPickerPage * DL_PICKER_PER_PAGE + slot;
+                        const SignalValue* s = getSignalByIndex(sigIdx);
+                        if (!s) break;
+                        int col = (slot % 3);
+                        int row = (slot / 3);
                         int bx = 12 + col * (colWidth + 8);
                         int by = startY + row * (rowHeight + 6);
 
                         if (touchLastX >= bx && touchLastX <= bx + colWidth &&
                             touchLastY >= by && touchLastY <= by + rowHeight) {
-                            availablePids[i].enabled = !availablePids[i].enabled;
-                            Serial.printf("[PID PICKER] Toggled %s -> %s\n", availablePids[i].idStr, availablePids[i].enabled ? "ON" : "OFF");
+                            dlSelToggleSig(sigIdx);
+                            Serial.printf("[DL PICKER] Toggled %s\n", s->key);
                             return;
                         }
                     }
 
                     int botY = 412;
                     if (touchLastY >= botY && touchLastY <= botY + 44) {
-                        if (touchLastX >= 12 && touchLastX <= 172) {
-                            for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = true;
-                        } else if (touchLastX >= 184 && touchLastX <= 344) {
-                            for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = false;
-                        } else if (touchLastX >= 356 && touchLastX <= 788) {
+                        int pages = (getSignalCount() + DL_PICKER_PER_PAGE - 1) / DL_PICKER_PER_PAGE;
+                        if (touchLastX >= 12 && touchLastX <= 112) {
+                            if (g_dlPickerPage > 0) g_dlPickerPage--;
+                        } else if (touchLastX >= 124 && touchLastX <= 224) {
+                            if (g_dlPickerPage + 1 < pages) g_dlPickerPage++;
+                        } else if (touchLastX >= 236 && touchLastX <= 376) {
+                            dlSelAll();
+                        } else if (touchLastX >= 388 && touchLastX <= 528) {
+                            dlSelNone();
+                        } else if (touchLastX >= 540 && touchLastX <= 788) {
                             isPidConfigOpen = false;
                         }
                         return;
@@ -2279,37 +2386,25 @@ void processDatalogging() {
         logEntryCount++;
 
         String row = String(millis());
-        for (size_t i = 0; i < PID_COUNT; i++) {
-            if (!availablePids[i].enabled) continue;
-            row += ",";
-            if (strcmp(availablePids[i].idStr, "RPM") == 0) {
-                row += String(vehicleData.rpm);
-            } else if (strcmp(availablePids[i].idStr, "SPEED") == 0) {
-                row += String(vehicleData.speedMph);
-            } else if (strcmp(availablePids[i].idStr, "THR") == 0) {
-                row += String(vehicleData.throttlePct);
-            } else if (strcmp(availablePids[i].idStr, "LOAD") == 0) {
-                row += String(vehicleData.engineLoadPct);
-            } else if (strcmp(availablePids[i].idStr, "AFR") == 0) {
-                row += String(vehicleData.commandedAfr, 2);
-                row += ",";
-                row += String(vehicleData.actualAfr, 2);
-            } else if (strcmp(availablePids[i].idStr, "KCLV") == 0) {
-                row += String(vehicleData.kclv, 1);
-            } else if (strcmp(availablePids[i].idStr, "KFB") == 0) {
-                row += String(vehicleData.knockFB, 1);
-            } else if (strcmp(availablePids[i].idStr, "ECT") == 0) {
-                row += String(vehicleData.coolantTempC);
-            } else if (strcmp(availablePids[i].idStr, "GEAR") == 0) {
-                row += String(vehicleData.gear);
-                row += ",";
-                row += vehicleData.tccLocked ? "1" : "0";
-            } else if (strcmp(availablePids[i].idStr, "IAT") == 0) {
-                row += String(vehicleData.iatC);
-            } else if (strcmp(availablePids[i].idStr, "MAF") == 0) {
-                row += String(vehicleData.mafGps, 2);
-            } else if (strcmp(availablePids[i].idStr, "TIMING") == 0) {
-                row += String(vehicleData.timingDeg, 1);
+        unsigned long now = millis();
+        for (int i = 0; i < getSignalCount(); i++) {
+            const SignalValue* s = getSignalByIndex(i);
+            if (!s || !dlLogThis(s->key)) continue;
+            row += ',';
+            // 5 s gate: the OBD poller rotates ~4 queries/s, so a polled
+            // signal legitimately refreshes only every few seconds. Blanking
+            // at 1.5 s (display freshness) would leave the CSV mostly empty;
+            // 5 s still catches key-off / silent bus.
+            if (s->valid && signalAge(s->key, now) < 5000) {
+                if (s->hasText) {
+                    row += s->text;                         // enum text (gear...)
+                } else {
+                    SignalMeta m{};
+                    getSignalMeta(s->key, &m);
+                    char vbuf[16];
+                    snprintf(vbuf, sizeof(vbuf), "%.*f", m.decimals, s->value);
+                    row += vbuf;
+                }
             }
         }
 
