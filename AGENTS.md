@@ -44,6 +44,15 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
   `/profiles/*.json` (UI shows 3 + BUILT-IN cell); tap = `applyProfileSelection()`
   hot-swaps engine (no reboot) + persists NVS; re-scan on SD hot-remount.
 - [x] `format_sd.sh` prints profile-seeding instructions.
+- [x] **Native unit tests** (`tests/native/run.sh`, 41 assertions): profile
+  engine runs natively via a 12-line Arduino shim (only `PROGMEM`/`millis()`
+  needed; ArduinoJson is header-only). Covers load/inheritance, Motorola
+  bitfield decode, gear enum + default map, OBD poll math (incl. Toyota
+  0x21 clamps + signed knockfb, lambda→AFR), freshness, signal metadata /
+  poll-id (Custom Dash binding), malformed-JSON robustness.
+  Two real bugs found & fixed: `getSignalMeta` auto-decimals used `scale`
+  instead of `a` for obd_poll; `loadProfile("{}")` wiped the live signal
+  table (now requires `signals` or `inherits`).
 - [x] Waveshare 4.3B migration (PR#2 lineage): ISO-TP, bus-off recovery, NVS
   file counter, CH422G expander, GT911 touch, PCF85063 RTC, TRD UI.
 - Build: `pio run` SUCCESS — RAM 19.6% (64 KB), Flash 35.8% (1.12 MB / 3 MB).
@@ -107,7 +116,8 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
 ```bash
 source /opt/data/pio-venv/bin/activate
 cd /opt/data/dashview && pio run          # SUCCESS = deployable
+bash tests/native/run.sh                  # profile-engine unit tests (no HW)
 pio run -t upload -t monitor              # USB CDC (ARDUINO_USB_CDC_ON_BOOT=1)
 ```
-No unit tests; verification = clean build + bench flash. SD card: FAT32 via
+Verification = native tests green + clean build + bench flash. SD card: FAT32 via
 `format_sd.sh`, logs at root, profiles in `/profiles/`.

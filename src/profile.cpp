@@ -227,6 +227,11 @@ bool loadProfile(const char* json) {
     if (err) {
         return false;
     }
+    // A parseable but contentless object ("{}", '{"name":"x"}') must not wipe
+    // the currently loaded profile — require at least signals or inheritance.
+    if (doc["signals"].isNull() && doc["inherits"].isNull()) {
+        return false;
+    }
 
     // Reset signal table
     s_signalCount = 0;
@@ -426,7 +431,9 @@ bool getSignalMeta(const char* key, SignalMeta* out) {
         out->kind = d.kind;
         strncpy(out->unit, d.unit, sizeof(out->unit) - 1);
         out->unit[sizeof(out->unit) - 1] = 0;
-        out->decimals = (d.decimals >= 0) ? (uint8_t)d.decimals : autoDecimals(d.scale);
+        out->decimals = (d.decimals >= 0)
+            ? (uint8_t)d.decimals
+            : autoDecimals(d.kind == SIGNAL_KIND_OBD_POLL ? d.a : d.scale);
         out->hasClampMin = d.hasClampMin; out->clampMin = d.clampMin;
         out->hasClampMax = d.hasClampMax; out->clampMax = d.clampMax;
         out->obdMode = d.obdMode; out->obdPid = d.obdPid;
