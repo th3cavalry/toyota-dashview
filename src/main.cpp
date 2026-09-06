@@ -81,7 +81,12 @@ public:
             cfg.pin_vsync   = 3;
             cfg.pin_hsync   = 46;
             cfg.pin_pclk    = 7;
-            cfg.freq_write  = 16000000; // 16 MHz pixel clock (Waveshare timing)
+            // 14 MHz pixel clock. Waveshare's demo runs 16 MHz, but it has no
+            // Wi-Fi AP, no CAN, and no per-frame PSRAM->PSRAM canvas push.
+            // The GDMA scan-out reads the FB from Octal PSRAM continuously;
+            // at 16 MHz + a 768 KB full-frame push at 30 FPS the LCD FIFO
+            // starves in bursts and the image shears horizontally ("shaking").
+            cfg.freq_write  = 14000000;
             cfg.hsync_polarity    = 0;
             cfg.hsync_front_porch = 8;
             cfg.hsync_pulse_width = 4;
@@ -101,7 +106,11 @@ public:
 };
 
 LGFX_Waveshare43B tft;
-LGFX_Sprite canvas(&tft); // PSRAM canvas; pushed to the panel at 30 FPS
+// Draw straight into the panel's PSRAM framebuffer (GDMA scans it out live).
+// This used to be a second 800x480 LGFX_Sprite pushed with pushSprite() every
+// frame — a PSRAM->PSRAM 768 KB copy 30x/s on top of the panel refresh's own
+// PSRAM stream. That starved the LCD FIFO and sheared the image horizontally.
+lgfx::LGFX_Device& canvas = tft;
 
 // =========================================================================
 // Pin Definitions (Waveshare ESP32-S3-Touch-LCD-4.3B)
@@ -2111,7 +2120,7 @@ void updateDisplay() {
         default:               renderDashboard();     break;
     }
 
-    canvas.pushSprite(0, 0);
+    // No push needed: the panel GDMA scans out the framebuffer we just drew.
 }
 
 // =========================================================================
@@ -2119,7 +2128,6 @@ void updateDisplay() {
 // =========================================================================
 void showToyotaBootSplash() {
     canvas.drawPng(trd_splash_png, TRD_SPLASH_PNG_LEN, 0, 0);
-    canvas.pushSprite(0, 0);
     isBootSplashActive = true;
 }
 
@@ -2468,10 +2476,8 @@ void setup() {
     Serial.printf("[DISPLAY] Panel ready: %dx%d, PSRAM frame buffer: %s\n",
                   tft.width(), tft.height(), psramFound() ? "yes" : "NO (memory_type mismatch!)");
 
-    // Draw into a PSRAM-backed canvas, then push whole frames to the panel.
-    canvas.setColorDepth(16);
-    canvas.setPsram(true);
-    canvas.createSprite(tft.width(), tft.height());
+    // Drawing targets the panel framebuffer directly (canvas is an alias of
+    // tft) — no sprite allocation, no per-frame full-screen copy.
 
     backlightOn();
     initGt911Touch();
