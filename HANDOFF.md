@@ -49,6 +49,25 @@ Expected first boot serial (115200):
 If upload can't sync: board is running app firmware that hogs USB-CDC — use
 BOOT+RST, or `pio run -t upload --upload-port /dev/ttyACM0` after reset.
 
+## Bench flash status (2026-09-06, FlowZ13 bare-metal)
+
+TOUCH FIX IS CODED + BUILD GREEN on branch `fix/touch-gt911-register-offset`
+(commit 11a218d, pushed to origin): GT911 track data was read from 0x8150
+instead of 0x814F so every field was byte-shifted (X=xH|yL<<8, Y=yH|press<<8,
+then clamped) — dead hit-boxes + phantom 400px "swipes" on every page except
+the splash. Also added missing navbar < PREV / NEXT > hit-boxes.
+PR open step pending (needs gh approval on this machine).
+
+BLOCKER: bulk flash writes corrupt mid-transfer on this bench. Chip connects,
+reads MAC, writes the FIRST chunk, then "Serial data stream stopped / Invalid
+head of packet" every time. Tried: pio upload, esptool 4.8.6 + 5.4.0, 115200
+and 921600, --no-stub, --before default_reset/usb_reset, retry loops x10.
+Board enumerates through a USB hub (bus 3 port 2.3, 12M). ModemManager
+inactive, no other process holds the port, autosuspend not the cause.
+=> Physical layer: reseat/swap the USB-C cable (use the COM/UART-port cable,
+data-capable) or move the board to a direct rear USB port, then re-run the
+flash. Software retries do not help.
+
 ## Work order for this session (BENCH.md has the full checklist)
 
 1. **Flash + boot smoke** (BENCH §1). Dark screen after flash = backlight/CH422G
