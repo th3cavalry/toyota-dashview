@@ -55,8 +55,12 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
   table (now requires `signals` or `inherits`).
 - [x] Waveshare 4.3B migration (PR#2 lineage): ISO-TP, bus-off recovery, NVS
   file counter, CH422G expander, GT911 touch, PCF85063 RTC, TRD UI.
-- Build: `pio run` SUCCESS — RAM 19.6% (64 KB), Flash 35.8% (1.12 MB / 3 MB).
-  Toolchain: `/opt/data/pio-venv` (has pip; uv venvs don't).
+- [x] **Hardware Flash & Boot Verified (2026-09-05)**: Successfully flashed to
+  physical Waveshare 4.3B hardware via `/dev/ttyACM0`. Verified live boot log:
+  CH422G IO expander OK, 800x480 PSRAM framebuffer OK, GT911 touch OK, PCF85063
+  RTC OK, TWAI CAN initialized (TX:15, RX:16 @ 500k), Wi-Fi AP + SavvyCAN server live,
+  Profile engine active (`toyota_tacoma_2016_2023`).
+- Build: `pio run` SUCCESS — RAM 20.2% (66 KB), Flash 35.9% (1.13 MB / 3 MB).
 
 ## IN PROGRESS
 
