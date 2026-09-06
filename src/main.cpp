@@ -1089,10 +1089,17 @@ bool pollTouch(int &screenX, int &screenY) {
         return false;
     }
 
-    // Point 1 track data: [id, xL, xH, yL, yH, ...] from 0x8150
+    // Point 1 track data: [id, xL, xH, yL, yH, ...] — the TRACK ID byte lives
+    // at 0x814F and coordinates start at 0x8150. Espressif's esp_lcd_touch_gt911
+    // reads 8 bytes per point from POINT_STAT+1 for exactly this reason; an
+    // earlier version of this driver pointed at 0x8150 directly while still
+    // skipping pt[0], shifting every field one byte and feeding the UI
+    // X=(xH|yL<<8), Y=(yH|pressL<<8) garbage clamped to the screen edges —
+    // symptom: taps miss every hit-box and phantom >=400px deltas fake swipes.
+    const uint16_t GT911_REG_TRACK1 = GT911_REG_POINT_STAT + 1;  // 0x814F
     Wire.beginTransmission(gt911Addr);
-    Wire.write((uint8_t)(0x8150 >> 8));
-    Wire.write((uint8_t)(0x8150 & 0xFF));
+    Wire.write((uint8_t)(GT911_REG_TRACK1 >> 8));
+    Wire.write((uint8_t)(GT911_REG_TRACK1 & 0xFF));
     bool ok = (Wire.endTransmission(false) == 0 && Wire.requestFrom(gt911Addr, (uint8_t)5) == 5);
     uint8_t pt[5] = {0};
     if (ok) Wire.readBytes(pt, 5);
@@ -2171,6 +2178,17 @@ void handleTouch() {
 
         Serial.printf("[TOUCH] Release at (%d, %d) | deltaX=%d, deltaY=%d, dur=%lums\n", 
                       touchLastX, touchLastY, deltaX, deltaY, duration);
+
+        // 0. Bottom nav-bar buttons (drawn on every page: "< PREV" left,
+        // "NEXT >" right, y = 440..480). These are visible buttons — they
+        // must have hit-boxes or users read the whole screen as dead.
+        // Checked before swipes so a tap inside the bar never page-flips.
+        if (touchLastY >= UI_H - UI_NAVBAR_H && !isPidConfigOpen && !isRawSnifferModalOpen &&
+            abs(deltaX) < 30 && abs(deltaY) < 30 && duration < 600) {
+            if (touchLastX <= 140)       { prevScreen(); return; }
+            else if (touchLastX >= 660)  { nextScreen(); return; }
+            return; // dot strip / bar background: swallow, do nothing
+        }
 
         // 1. Horizontal Swipe: MUST travel at least half the screen width (>= 160px)
         if (abs(deltaX) >= SWIPE_MIN_DIST_PX && !isPidConfigOpen && !isRawSnifferModalOpen) {
