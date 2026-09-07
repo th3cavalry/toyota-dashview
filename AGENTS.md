@@ -53,13 +53,15 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
   Two real bugs found & fixed: `getSignalMeta` auto-decimals used `scale`
   instead of `a` for obd_poll; `loadProfile("{}")` wiped the live signal
   table (now requires `signals` or `inherits`).
-- [x] Waveshare 4.3B migration (PR#2 lineage): ISO-TP, bus-off recovery, NVS
-  file counter, CH422G expander, GT911 touch, PCF85063 RTC, TRD UI.
-- [x] **Hardware Flash & Boot Verified (2026-09-05)**: Successfully flashed to
-  physical Waveshare 4.3B hardware via `/dev/ttyACM0`. Verified live boot log:
-  CH422G IO expander OK, 800x480 PSRAM framebuffer OK, GT911 touch OK, PCF85063
-  RTC OK, TWAI CAN initialized (TX:15, RX:16 @ 500k), Wi-Fi AP + SavvyCAN server live,
-  Profile engine active (`toyota_tacoma_2016_2023`).
+- [x] **Flicker-Free Display Architecture**: Replaced continuous whole-screen black erasing with event-driven dirty display updates. Static screens (Wizard, Settings, Update Prompt) render once on change (0 writes/sec when idle). Live telemetry screens update only dynamic bounding boxes without wiping the card chassis.
+- [x] **Universal Multi-Vehicle Support**: Built-in Universal SAE J1979 / OBD-II profile (`universal_j1979`) supporting any 2008+ CAN vehicle (500k HS-CAN, 0x7DF functional queries) alongside dedicated Toyota Tacoma (`toyota_tacoma_2016_2023`) and custom SD profiles (`/profiles/*.json`).
+- [x] **First-Time Boot Setup Wizard (OOBE)**: 3-step interactive touchscreen wizard on unconfigured boot (`setup_done = false`): Step 1 (Vehicle Select), Step 2 (Feature Toggles: Wi-Fi, Sniffer, Logger, Polling), Step 3 (0°/180° Orientation & Confirmation). Settings page includes "Run Setup Wizard" card to reconfigure anytime.
+- [x] **Dual End-User Easy Update Engine**:
+  - *MicroSD Drop*: Automatically detects `/dashview.bin` on SD card at boot, displays touchscreen confirmation prompt, writes with visual progress bar, renames to `.bak`, and reboots.
+  - *Wireless Web OTA Portal*: Serves mobile-friendly management and firmware update portal on `http://192.168.4.1/update` with drag-and-drop file upload and real-time progress bar.
+  - *Fail-Safe Partitions*: Migrated to `default_16MB.csv` (dual 6.25 MB OTA slots with rollback protection).
+- [x] **Bench Telemetry Simulator (Demo Mode)**: Generates 16-second realistic driving telemetry loop (Idle -> Acceleration 1st-4th -> Cruise 70 MPH in 6th with lockup -> Deceleration with DFCO). Toggleable via Settings Card 4 or tapping the header status pill.
+- [x] **Hardware Verification**: Verified live boot and flash on Waveshare ESP32-S3-Touch-LCD-4.3B (`303A:1001` @ `/dev/ttyACM0`).
 - Build: `pio run` SUCCESS — RAM 20.2% (66 KB), Flash 35.9% (1.13 MB / 3 MB).
 
 ## IN PROGRESS

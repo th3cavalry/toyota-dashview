@@ -56,6 +56,19 @@ bool profileSignalPollId(const char* key, uint8_t* mode, uint8_t* pid);
 bool onBroadcastFrame(uint32_t canId, const uint8_t* data, uint8_t len, unsigned long nowMs = 0);
 bool onObdPollResponse(uint8_t mode, uint8_t pid, const uint8_t* data, uint8_t len, unsigned long nowMs = 0);
 
+// Built-in profile enumeration
+struct BuiltinProfileInfo {
+    const char* id;
+    const char* name;
+    const char* make;
+    const char* model;
+    const char* years;
+};
+
+int getBuiltinProfileCount();
+const BuiltinProfileInfo* getBuiltinProfileInfo(int idx);
+bool loadBuiltinProfile(const char* id);
+
 // Bus & vehicle metadata accessors
 uint32_t getReqId();
 uint32_t getRespId();

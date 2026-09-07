@@ -14,11 +14,27 @@
 #include "toyota_splash.h"
 #include "profile.h"
 #include "custom_dash.h"   // Custom Dash API (impl included later, post-palette)
+#include "updater.h"
+#include "telemetry_sim.h"
 
 // Persistent Settings (Flash NVS)
 Preferences preferences;
 bool isDisplayFlipped = false; // Persistent: false = normal, true = 180 deg (software push)
 bool backlightEnabled = true;  // Persistent: CH422G digital backlight (no PWM on 4.3B)
+
+// OOBE Setup Wizard & Commercial Feature Flags
+bool isSetupDone = false;
+bool featureWifiEnabled = true;
+bool featureSnifferEnabled = true;
+bool featureLoggerEnabled = true;
+bool featureListenOnly = false;
+char activeProfileId[32] = "universal_j1979";
+int wizardStep = 0; // 0 = vehicle select, 1 = features, 2 = orientation & finish
+char wizardSelectedProfile[32] = "universal_j1979";
+
+// MicroSD Firmware Update State
+char sdUpdateFile[64] = "";
+size_t sdUpdateSize = 0;
 
 // Forward decls (defined with the CH422G / display sections below)
 void backlightOn();
@@ -321,7 +337,7 @@ float currentPPS = 0;
 unsigned long lastPPSCheck = 0;
 unsigned long lastDisplayUpdate = 0;
 
-// 6 Dedicated Full-Color UI Screens
+// Dedicated Full-Color UI Screens
 enum DisplayScreen {
     SCREEN_DASHBOARD = 0,
     SCREEN_CUSTOM    = 1, // Fully user-customizable gauge dash
@@ -330,7 +346,10 @@ enum DisplayScreen {
     SCREEN_WIFI      = 4,
     SCREEN_SYSTEM    = 5,
     SCREEN_SETTINGS  = 6, // Settings & 180-deg Display Flip Page
-    SCREEN_COUNT     = 7
+    SCREEN_COUNT     = 7,
+    SCREEN_WIZARD    = 8, // First-Time Setup Wizard
+    SCREEN_UPDATE_CONFIRM = 9,
+    SCREEN_UPDATE_PROGRESS = 10
 };
 DisplayScreen currentScreen = SCREEN_DASHBOARD;
 
@@ -375,13 +394,20 @@ int snifferHead = 0;
 // Wi-Fi GVRET Streaming to SavvyCAN
 // =========================================================================
 void initWiFiStreaming() {
+    if (!featureWifiEnabled) {
+        WiFi.mode(WIFI_OFF);
+        Serial.println("[WIFI] Wi-Fi is DISABLED by user preference / wizard.");
+        return;
+    }
     WiFi.mode(WIFI_AP);
     WiFi.softAP(WIFI_SSID, WIFI_PASS);
     IPAddress IP = WiFi.softAPIP();
     tcpServer.begin();
     tcpServer.setNoDelay(true);
+    initWebUpdater();
     Serial.printf("[WIFI] Access Point Started: SSID '%s' (Pass: '%s')\n", WIFI_SSID, WIFI_PASS);
     Serial.printf("[WIFI] SavvyCAN Server Listening at %s:%d\n", IP.toString().c_str(), SAVVYCAN_PORT);
+    Serial.println("[WIFI] Web OTA Management Portal: http://192.168.4.1/ (and /update)");
 }
 
 void streamFrameToSavvyCAN(const twai_message_t &msg) {
@@ -418,6 +444,9 @@ void streamFrameToSavvyCAN(const twai_message_t &msg) {
 }
 
 void handleWiFiClients() {
+    if (!featureWifiEnabled) return;
+    handleWebUpdater();
+
     if (tcpServer.hasClient()) {
         if (!savvyClient || !savvyClient.connected()) {
             savvyClient = tcpServer.available();
@@ -443,12 +472,14 @@ void handleWiFiClients() {
 // CAN Driver Initialization & Toyota OBD Queries
 // =========================================================================
 void initCAN() {
-    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
+    twai_mode_t mode = featureListenOnly ? TWAI_MODE_LISTEN_ONLY : TWAI_MODE_NORMAL;
+    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, mode);
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
     if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
-        Serial.printf("[CAN] TWAI driver installed on TX: IO%d, RX: IO%d (Normal 500k Mode).\n", CAN_TX_PIN, CAN_RX_PIN);
+        Serial.printf("[CAN] TWAI driver installed on TX: IO%d, RX: IO%d (%s 500k Mode).\n",
+                      CAN_TX_PIN, CAN_RX_PIN, featureListenOnly ? "LISTEN-ONLY" : "Normal");
     } else {
         Serial.println("[CAN] Failed to install TWAI driver.");
         return;
@@ -885,12 +916,24 @@ void dimScreen() {
 // =========================================================================
 void loadSettings() {
     preferences.begin("dashview", true);
+    isSetupDone = preferences.getBool("setup_done", false);
     isDisplayFlipped = preferences.getBool("flip180", false);
     backlightEnabled = preferences.getBool("bl_on", true);
+    featureWifiEnabled = preferences.getBool("wifi_en", true);
+    featureSnifferEnabled = preferences.getBool("sniffer_en", true);
+    featureLoggerEnabled = preferences.getBool("logger_en", true);
+    featureListenOnly = preferences.getBool("listen_only", false);
+    String prof = preferences.getString("prof", "universal_j1979");
+    strncpy(activeProfileId, prof.c_str(), sizeof(activeProfileId) - 1);
+    strncpy(wizardSelectedProfile, activeProfileId, sizeof(wizardSelectedProfile) - 1);
     preferences.end();
-    Serial.printf("[SETTINGS] Loaded: Orientation=%s, Backlight=%s\n",
-                  isDisplayFlipped ? "180-DEG FLIPPED" : "NORMAL",
-                  backlightEnabled ? "ON" : "OFF");
+    Serial.printf("[SETTINGS] Loaded: SetupDone=%s, Profile=%s, Wi-Fi=%s, Sniffer=%s, Logger=%s, ListenOnly=%s\n",
+                  isSetupDone ? "YES" : "NO (FIRST BOOT WIZARD)",
+                  activeProfileId,
+                  featureWifiEnabled ? "ON" : "OFF",
+                  featureSnifferEnabled ? "ON" : "OFF",
+                  featureLoggerEnabled ? "ON" : "OFF",
+                  featureListenOnly ? "YES" : "NO");
 }
 
 void saveDisplayFlipSetting(bool flip) {
@@ -1202,6 +1245,14 @@ void drawHeaderBar(const char* title) {
         canvas.drawCenterString(sdMounted ? "SD OK" : "NO SD", 734, 14);
     }
 
+    // Demo Sim Badge
+    if (isDemoSimMode) {
+        canvas.fillRoundRect(520, 8, 90, 28, 4, C_TRD_ORANGE);
+        canvas.setTextColor(TFT_BLACK);
+        canvas.setFont(&fonts::Font2);
+        canvas.drawCenterString("DEMO SIM", 565, 14);
+    }
+
     canvas.drawFastHLine(0, UI_HEADER_H, UI_W, C_CARD_BORDER);
 }
 
@@ -1229,7 +1280,9 @@ void drawBottomNavBar() {
 
 // Page 0: Live Vehicle Cluster (TRD Motorsport Gauge)
 void renderDashboard() {
-    drawHeaderBar("TOYOTA DASHVIEW - CLUSTER");
+    char headerTitle[64];
+    snprintf(headerTitle, sizeof(headerTitle), "DASHVIEW - %s", getProfileName());
+    drawHeaderBar(headerTitle);
 
     // 1. Tachometer Bar (0 - 6000 RPM) with TRD Motorsport color bands
     int rpmY = 52;
@@ -1899,29 +1952,48 @@ void renderSystem() {
 // NVS is written ONLY after the profile validates, so a typo'd or corrupt
 // file can never leave NVS pointing at a selection that won't load.
 static bool applyProfileSelection(const char* id) {
-    if (id && id[0] != 0) {
-        if (!sdMounted) return false;
+    if (!id || id[0] == 0) {
+        loadDefaultProfile();
+        Serial.printf("[PROFILE] Default profile active: %s (%s)\n", getProfileName(), getProfileId());
+        preferences.begin("dashview", false);
+        preferences.putString("prof", "");
+        preferences.end();
+        return true;
+    }
+
+    // 1. Check built-in profiles (Universal J1979 or Tacoma)
+    if (loadBuiltinProfile(id)) {
+        Serial.printf("[PROFILE] Built-in Profile active: %s (%s)\n", getProfileName(), getProfileId());
+        preferences.begin("dashview", false);
+        preferences.putString("prof", id);
+        preferences.end();
+        strncpy(activeProfileId, id, sizeof(activeProfileId) - 1);
+        return true;
+    }
+
+    // 2. Check SD card profiles (/profiles/<id>.json)
+    if (sdMounted) {
         char profPath[64];
         snprintf(profPath, sizeof(profPath), "/profiles/%s.json", id);
-        if (!SD.exists(profPath)) return false;
-        File pf = SD.open(profPath, FILE_READ);
-        if (!pf) return false;
-        String profJson = pf.readString();
-        pf.close();
-        if (!loadProfile(profJson.c_str())) {
-            Serial.println("[PROFILE] Profile JSON invalid - selection kept, built-in still active.");
-            return false;
+        if (SD.exists(profPath)) {
+            File pf = SD.open(profPath, FILE_READ);
+            if (pf) {
+                String profJson = pf.readString();
+                pf.close();
+                if (loadProfile(profJson.c_str())) {
+                    Serial.printf("[PROFILE] SD Profile active: %s (%s)\n", getProfileName(), getProfileId());
+                    preferences.begin("dashview", false);
+                    preferences.putString("prof", id);
+                    preferences.end();
+                    strncpy(activeProfileId, id, sizeof(activeProfileId) - 1);
+                    return true;
+                }
+            }
         }
-        Serial.printf("[PROFILE] Profile active: %s (%s)\n", getProfileName(), getProfileId());
-    } else {
-        loadDefaultProfile();
-        Serial.printf("[PROFILE] Reverted to built-in: %s (%s)\n", getProfileName(), getProfileId());
-        id = "";
     }
-    preferences.begin("dashview", false);
-    preferences.putString("prof", id ? id : "");
-    preferences.end();
-    return true;
+
+    Serial.printf("[PROFILE] Could not load profile '%s' — keeping current active.\n", id);
+    return false;
 }
 
 // SD profile picker: scan /profiles/*.json once per SD mount into a small table
@@ -2061,17 +2133,28 @@ void renderSettings() {
     snprintf(buf, sizeof(buf), "Active: %s [%s]", getProfileName(), getProfileId());
     canvas.drawString(buf, 34, 322);
 
-    // Card 4: Reboot Controller
-    // Box: x=12, y=358, w=776, h=52
-    canvas.fillRoundRect(12, 358, 776, 52, 8, C_CARD_BG);
-    canvas.drawRoundRect(12, 358, 776, 52, 8, C_CARD_BORDER);
-    canvas.fillRect(14, 358, 6, 52, C_TRD_BURGUNDY);
+    // Card 4: Bench Telemetry Simulator (Demo Mode)
+    // Box: x=12, y=344, w=776, h=40
+    canvas.fillRoundRect(12, 344, 776, 40, 6, C_CARD_BG);
+    canvas.drawRoundRect(12, 344, 776, 40, 6, C_CARD_BORDER);
+    canvas.fillRect(14, 344, 6, 40, isDemoSimMode ? C_TRD_ORANGE : canvas.color565(60, 70, 90));
+    uint16_t simBtnBg = isDemoSimMode ? C_TRD_ORANGE : canvas.color565(20, 30, 45);
+    canvas.fillRoundRect(34, 348, 732, 32, 4, simBtnBg);
+    canvas.drawRoundRect(34, 348, 732, 32, 4, isDemoSimMode ? canvas.color565(255, 180, 50) : C_CARD_BORDER);
+    canvas.setTextColor(isDemoSimMode ? TFT_BLACK : C_TEXT_WHITE);
+    canvas.setFont(&fonts::Font2);
+    canvas.drawCenterString(isDemoSimMode ? "BENCH TELEMETRY SIMULATOR: [ RUNNING - TAP TO STOP ]" : "BENCH TELEMETRY SIMULATOR: [ STOPPED - TAP TO START TEST ]", 400, 356);
 
-    canvas.fillRoundRect(34, 362, 732, 44, 6, canvas.color565(45, 18, 22));
-    canvas.drawRoundRect(34, 362, 732, 44, 6, C_TRD_BURGUNDY);
-    canvas.setTextColor(canvas.color565(255, 120, 120));
-    canvas.setFont(&fonts::Font4);
-    canvas.drawCenterString("REBOOT CONTROLLER", 400, 372);
+    // Card 5: Run Initial Setup Wizard (re-run vehicle & feature setup)
+    // Box: x=12, y=388, w=776, h=40
+    canvas.fillRoundRect(12, 388, 776, 40, 6, C_CARD_BG);
+    canvas.drawRoundRect(12, 388, 776, 40, 6, C_CARD_BORDER);
+    canvas.fillRect(14, 388, 6, 40, C_TEXT_CYAN);
+    canvas.fillRoundRect(34, 392, 732, 32, 4, canvas.color565(20, 50, 90));
+    canvas.drawRoundRect(34, 392, 732, 32, 4, C_TEXT_CYAN);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.setFont(&fonts::Font2);
+    canvas.drawCenterString("RUN SETUP WIZARD (RE-CONFIGURE VEHICLE & FEATURES)", 400, 400);
 
     drawBottomNavBar();
 }
@@ -2081,6 +2164,7 @@ void renderSettings() {
 // updated within the last 1.5 s, so stale values never overwrite live ones
 // when a profile omits a signal or the bus goes quiet.
 static void syncProfileSignals() {
+    if (isDemoSimMode) return;
     unsigned long now = millis();
     if (signalAge("rpm", now) < 1500)          vehicleData.rpm = (int)getSignal("rpm");
     if (signalAge("speed", now) < 1500) {
@@ -2106,8 +2190,363 @@ static void syncProfileSignals() {
     }
 }
 
-void updateDisplay() {
+// =========================================================================
+// Commercial Multi-Vehicle Setup Wizard & Update Renderers
+// =========================================================================
+void renderWizard() {
+    drawHeaderBar("DASHVIEW INITIAL SETUP");
+
+    if (wizardStep == 0) {
+        // Step 1 of 3: Select Vehicle
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("STEP 1: SELECT YOUR VEHICLE", 20, 50);
+
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.drawString("Choose your vehicle profile or universal OBD-II baseline:", 20, 76);
+
+        // Vehicle Option 1: Universal OBD-II (All Makes 2008+)
+        bool sel1 = (strcmp(wizardSelectedProfile, "universal_j1979") == 0);
+        uint16_t bg1 = sel1 ? canvas.color565(20, 45, 80) : C_CARD_BG;
+        uint16_t border1 = sel1 ? C_TEXT_CYAN : C_CARD_BORDER;
+        canvas.fillRoundRect(20, 100, 760, 85, 8, bg1);
+        canvas.drawRoundRect(20, 100, 760, 85, 8, border1);
+        canvas.fillRect(22, 100, 6, 85, sel1 ? C_TEXT_CYAN : canvas.color565(60, 70, 90));
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("Universal OBD-II (All Makes 2008+)", 40, 110);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.drawString("Standard SAE J1979 PIDs (RPM, Speed, Temps, AFR, Throttle) - 500k HS-CAN", 40, 138);
+        if (sel1) {
+            canvas.fillRoundRect(640, 115, 120, 30, 4, C_TEXT_CYAN);
+            canvas.setTextColor(TFT_BLACK);
+            canvas.setFont(&fonts::Font2);
+            canvas.drawCenterString("SELECTED", 700, 122);
+        }
+
+        // Vehicle Option 2: Toyota Tacoma 2016-2023 (3rd Gen)
+        bool sel2 = (strcmp(wizardSelectedProfile, "toyota_tacoma_2016_2023") == 0);
+        uint16_t bg2 = sel2 ? canvas.color565(60, 20, 25) : C_CARD_BG;
+        uint16_t border2 = sel2 ? C_TRD_RED : C_CARD_BORDER;
+        canvas.fillRoundRect(20, 195, 760, 85, 8, bg2);
+        canvas.drawRoundRect(20, 195, 760, 85, 8, border2);
+        canvas.fillRect(22, 195, 6, 85, sel2 ? C_TRD_RED : canvas.color565(60, 70, 90));
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("Toyota Tacoma (2016-2023 / 3rd Gen)", 40, 205);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.drawString("2GR-FKS V6 • TRD Motorsport Cluster • KCLV & Knock FB • Trans Temp", 40, 233);
+        if (sel2) {
+            canvas.fillRoundRect(640, 210, 120, 30, 4, C_TRD_RED);
+            canvas.setTextColor(C_TEXT_WHITE);
+            canvas.setFont(&fonts::Font2);
+            canvas.drawCenterString("SELECTED", 700, 217);
+        }
+
+        // Vehicle Option 3: MicroSD Profiles (/profiles/*.json)
+        bool sel3 = (!sel1 && !sel2);
+        uint16_t bg3 = sel3 ? canvas.color565(20, 55, 35) : C_CARD_BG;
+        uint16_t border3 = sel3 ? C_GREEN_OK : C_CARD_BORDER;
+        canvas.fillRoundRect(20, 290, 760, 85, 8, bg3);
+        canvas.drawRoundRect(20, 290, 760, 85, 8, border3);
+        canvas.fillRect(22, 290, 6, 85, sel3 ? C_GREEN_OK : canvas.color565(60, 70, 90));
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("Custom Profile from MicroSD (/profiles)", 40, 300);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_MUTED);
+        if (g_profileCount > 0) {
+            char pbuf[64];
+            snprintf(pbuf, sizeof(pbuf), "SD has %d profile(s): active = %s", g_profileCount, wizardSelectedProfile);
+            canvas.drawString(pbuf, 40, 328);
+        } else {
+            canvas.drawString("Drop JSON vehicle profile in /profiles on SD card to support any make/model", 40, 328);
+        }
+        if (sel3) {
+            canvas.fillRoundRect(640, 305, 120, 30, 4, C_GREEN_OK);
+            canvas.setTextColor(TFT_BLACK);
+            canvas.setFont(&fonts::Font2);
+            canvas.drawCenterString("SELECTED", 700, 312);
+        }
+
+        // Bottom Button: NEXT
+        canvas.fillRoundRect(200, 395, 400, 55, 8, canvas.color565(37, 99, 235));
+        canvas.drawRoundRect(200, 395, 400, 55, 8, canvas.color565(96, 165, 250));
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.setFont(&fonts::Font4);
+        canvas.drawCenterString("NEXT: CONFIGURE FEATURES >", 400, 412);
+
+    } else if (wizardStep == 1) {
+        // Step 2 of 3: Feature Flags
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("STEP 2: ENABLE / DISABLE FEATURES", 20, 50);
+
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.drawString("Tap any feature card to toggle it ON or OFF for this vehicle:", 20, 76);
+
+        // Feature 0: Wi-Fi Hotspot & Web OTA
+        uint16_t bg0 = featureWifiEnabled ? canvas.color565(20, 40, 70) : C_CARD_BG;
+        uint16_t bdr0 = featureWifiEnabled ? C_TEXT_CYAN : C_CARD_BORDER;
+        canvas.fillRoundRect(20, 100, 370, 130, 8, bg0);
+        canvas.drawRoundRect(20, 100, 370, 130, 8, bdr0);
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("Wi-Fi & Web OTA", 35, 112);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.drawString("Stream to SavvyCAN & phone", 35, 140);
+        canvas.drawString("updates over local hotspot.", 35, 158);
+        canvas.fillRoundRect(35, 182, 140, 34, 6, featureWifiEnabled ? C_GREEN_OK : C_CARD_INNER);
+        canvas.setTextColor(featureWifiEnabled ? TFT_BLACK : C_TEXT_MUTED);
+        canvas.drawCenterString(featureWifiEnabled ? "ENABLED" : "DISABLED", 105, 192);
+
+        // Feature 1: CAN Sniffer Screen
+        uint16_t bg1 = featureSnifferEnabled ? canvas.color565(20, 40, 70) : C_CARD_BG;
+        uint16_t bdr1 = featureSnifferEnabled ? C_TEXT_CYAN : C_CARD_BORDER;
+        canvas.fillRoundRect(410, 100, 370, 130, 8, bg1);
+        canvas.drawRoundRect(410, 100, 370, 130, 8, bdr1);
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("CAN Bus Sniffer", 425, 112);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.drawString("Live traffic monitor screen.", 425, 140);
+        canvas.drawString("Turn off for non-tuner drivers.", 425, 158);
+        canvas.fillRoundRect(425, 182, 140, 34, 6, featureSnifferEnabled ? C_GREEN_OK : C_CARD_INNER);
+        canvas.setTextColor(featureSnifferEnabled ? TFT_BLACK : C_TEXT_MUTED);
+        canvas.drawCenterString(featureSnifferEnabled ? "ENABLED" : "DISABLED", 495, 192);
+
+        // Feature 2: MicroSD Datalogger
+        uint16_t bg2 = featureLoggerEnabled ? canvas.color565(20, 40, 70) : C_CARD_BG;
+        uint16_t bdr2 = featureLoggerEnabled ? C_TEXT_CYAN : C_CARD_BORDER;
+        canvas.fillRoundRect(20, 245, 370, 130, 8, bg2);
+        canvas.drawRoundRect(20, 245, 370, 130, 8, bdr2);
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("MicroSD Datalogger", 35, 257);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.drawString("Record CSV performance logs", 35, 285);
+        canvas.drawString("to MicroSD card automatically.", 35, 303);
+        canvas.fillRoundRect(35, 327, 140, 34, 6, featureLoggerEnabled ? C_GREEN_OK : C_CARD_INNER);
+        canvas.setTextColor(featureLoggerEnabled ? TFT_BLACK : C_TEXT_MUTED);
+        canvas.drawCenterString(featureLoggerEnabled ? "ENABLED" : "DISABLED", 105, 337);
+
+        // Feature 3: OBD-II Active Polling
+        uint16_t bg3 = (!featureListenOnly) ? canvas.color565(20, 40, 70) : C_CARD_BG;
+        uint16_t bdr3 = (!featureListenOnly) ? C_TEXT_CYAN : C_CARD_BORDER;
+        canvas.fillRoundRect(410, 245, 370, 130, 8, bg3);
+        canvas.drawRoundRect(410, 245, 370, 130, 8, bdr3);
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("OBD-II Polling", 425, 257);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.drawString("Active PID queries for AFR/ECT.", 425, 285);
+        canvas.drawString("Disable for 100% listen-only.", 425, 303);
+        canvas.fillRoundRect(425, 327, 140, 34, 6, (!featureListenOnly) ? C_GREEN_OK : C_TRD_ORANGE);
+        canvas.setTextColor(TFT_BLACK);
+        canvas.drawCenterString((!featureListenOnly) ? "ACTIVE TX" : "LISTEN-ONLY", 495, 337);
+
+        // Bottom Navigation Buttons
+        canvas.fillRoundRect(20, 395, 180, 55, 8, C_CARD_INNER);
+        canvas.drawRoundRect(20, 395, 180, 55, 8, C_CARD_BORDER);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.setFont(&fonts::Font4);
+        canvas.drawCenterString("< BACK", 110, 412);
+
+        canvas.fillRoundRect(560, 395, 220, 55, 8, canvas.color565(37, 99, 235));
+        canvas.drawRoundRect(560, 395, 220, 55, 8, canvas.color565(96, 165, 250));
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawCenterString("NEXT >", 670, 412);
+
+    } else if (wizardStep == 2) {
+        // Step 3 of 3: Mounting & Finish
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("STEP 3: MOUNTING ORIENTATION & CONFIRM", 20, 50);
+
+        // Orientation Card
+        canvas.fillRoundRect(20, 95, 760, 110, 8, C_CARD_BG);
+        canvas.drawRoundRect(20, 95, 760, 110, 8, C_CARD_BORDER);
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("Display Orientation", 35, 107);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.drawString("Tap to invert 180 degrees if custom wire harness routes from top:", 35, 135);
+
+        // Button Normal
+        canvas.fillRoundRect(35, 160, 340, 35, 6, !isDisplayFlipped ? C_GREEN_OK : C_CARD_INNER);
+        canvas.setTextColor(!isDisplayFlipped ? TFT_BLACK : C_TEXT_MUTED);
+        canvas.drawCenterString("STANDARD (0 DEG)", 205, 170);
+
+        // Button Inverted
+        canvas.fillRoundRect(405, 160, 340, 35, 6, isDisplayFlipped ? C_GREEN_OK : C_CARD_INNER);
+        canvas.setTextColor(isDisplayFlipped ? TFT_BLACK : C_TEXT_MUTED);
+        canvas.drawCenterString("INVERTED (180 DEG)", 575, 170);
+
+        // Summary Card
+        canvas.fillRoundRect(20, 220, 760, 155, 8, C_CARD_BG);
+        canvas.drawRoundRect(20, 220, 760, 155, 8, C_CARD_BORDER);
+        canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.drawString("Setup Summary", 35, 232);
+
+        char buf[80];
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_CYAN);
+        snprintf(buf, sizeof(buf), "Vehicle Profile: %s", wizardSelectedProfile);
+        canvas.drawString(buf, 35, 262);
+
+        canvas.setTextColor(C_TEXT_MUTED);
+        snprintf(buf, sizeof(buf), "Wi-Fi Hotspot: %s   •   CAN Sniffer: %s", featureWifiEnabled ? "ON" : "OFF", featureSnifferEnabled ? "ON" : "OFF");
+        canvas.drawString(buf, 35, 290);
+        snprintf(buf, sizeof(buf), "Datalogger: %s   •   OBD-II Polling: %s", featureLoggerEnabled ? "ON" : "OFF", (!featureListenOnly) ? "ACTIVE" : "LISTEN-ONLY");
+        canvas.drawString(buf, 35, 318);
+
+        // Bottom Navigation Buttons
+        canvas.fillRoundRect(20, 395, 180, 55, 8, C_CARD_INNER);
+        canvas.drawRoundRect(20, 395, 180, 55, 8, C_CARD_BORDER);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.setFont(&fonts::Font4);
+        canvas.drawCenterString("< BACK", 110, 412);
+
+        canvas.fillRoundRect(220, 395, 560, 55, 8, canvas.color565(16, 185, 129));
+        canvas.drawRoundRect(220, 395, 560, 55, 8, canvas.color565(110, 231, 183));
+        canvas.setTextColor(TFT_BLACK);
+        canvas.drawCenterString("FINISH SETUP & START DASHVIEW", 500, 412);
+    }
+}
+
+void renderUpdateConfirm() {
+    drawHeaderBar("FIRMWARE UPDATE DETECTED");
+
+    canvas.fillRoundRect(40, 80, 720, 340, 12, C_CARD_BG);
+    canvas.drawRoundRect(40, 80, 720, 340, 12, C_TRD_ORANGE);
+
+    canvas.setFont(&fonts::Font4);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.drawCenterString("New Firmware Detected on MicroSD", 400, 110);
+
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_MUTED);
+    char fbuf[80];
+    snprintf(fbuf, sizeof(fbuf), "File: %s   |   Size: %u KB", sdUpdateFile, (uint32_t)(sdUpdateSize / 1024));
+    canvas.drawCenterString(fbuf, 400, 155);
+
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.drawCenterString("Would you like to flash and install this firmware update now?", 400, 195);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawCenterString("The device will verify the image, flash it, and automatically reboot.", 400, 225);
+
+    // Install Button
+    canvas.fillRoundRect(80, 290, 300, 65, 8, canvas.color565(16, 185, 129));
+    canvas.drawRoundRect(80, 290, 300, 65, 8, canvas.color565(110, 231, 183));
+    canvas.setTextColor(TFT_BLACK);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString("INSTALL UPDATE", 230, 312);
+
+    // Cancel Button
+    canvas.fillRoundRect(420, 290, 300, 65, 8, C_CARD_INNER);
+    canvas.drawRoundRect(420, 290, 300, 65, 8, C_CARD_BORDER);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString("CANCEL / SKIP", 570, 312);
+}
+
+void renderUpdateProgress() {
     canvas.fillScreen(C_DARK_BG);
+    drawHeaderBar("UPDATING FIRMWARE");
+
+    canvas.fillRoundRect(40, 80, 720, 340, 12, C_CARD_BG);
+    canvas.drawRoundRect(40, 80, 720, 340, 12, C_TEXT_CYAN);
+
+    canvas.setFont(&fonts::Font4);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.drawCenterString("Firmware Update in Progress", 400, 110);
+
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_CYAN);
+    canvas.drawCenterString(updateStatusMessage, 400, 155);
+
+    // Progress Bar
+    int barX = 100, barY = 200, barW = 600, barH = 36;
+    canvas.fillRoundRect(barX, barY, barW, barH, 6, C_CARD_INNER);
+    canvas.drawRoundRect(barX, barY, barW, barH, 6, C_CARD_BORDER);
+
+    int fillW = (barW * constrain(updateProgressPercent, 0, 100)) / 100;
+    if (fillW > 0) {
+        canvas.fillRoundRect(barX, barY, fillW, barH, 6, canvas.color565(16, 185, 129));
+    }
+
+    char pbuf[32];
+    snprintf(pbuf, sizeof(pbuf), "%d%%", updateProgressPercent);
+    canvas.setFont(&fonts::Font4);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.drawCenterString(pbuf, 400, 255);
+
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TRD_RED);
+    canvas.drawCenterString("WARNING: DO NOT DISCONNECT POWER OR TURN OFF IGNITION", 400, 320);
+}
+
+bool isDisplayDirty = true;
+
+void markDisplayDirty() {
+    isDisplayDirty = true;
+}
+
+void updateDisplay() {
+    static int lastScreen = -1;
+    static int lastWizardStep = -1;
+    static bool lastRawModal = false;
+    static bool lastPidModal = false;
+    static bool lastCdEdit = false;
+    static unsigned long lastOneHzUpdate = 0;
+
+    bool screenChanged = (currentScreen != lastScreen) ||
+                         (currentScreen == SCREEN_WIZARD && wizardStep != lastWizardStep) ||
+                         (isRawSnifferModalOpen != lastRawModal) ||
+                         (isPidConfigOpen != lastPidModal) ||
+                         (g_cdEditMode != lastCdEdit);
+
+    if (screenChanged) {
+        canvas.fillScreen(C_DARK_BG);
+        lastScreen = currentScreen;
+        lastWizardStep = wizardStep;
+        lastRawModal = isRawSnifferModalOpen;
+        lastPidModal = isPidConfigOpen;
+        lastCdEdit = g_cdEditMode;
+        isDisplayDirty = true;
+    }
+
+    if (isUpdateInProgress) {
+        renderUpdateProgress();
+        return;
+    }
+
+    // Dynamic screens refresh on telemetry / events
+    if (currentScreen == SCREEN_DASHBOARD || currentScreen == SCREEN_CUSTOM || currentScreen == SCREEN_SNIFFER || currentScreen == SCREEN_LOGGER) {
+        isDisplayDirty = true;
+    } else if (currentScreen == SCREEN_WIFI || currentScreen == SCREEN_SYSTEM) {
+        if (millis() - lastOneHzUpdate >= 1000) {
+            lastOneHzUpdate = millis();
+            isDisplayDirty = true;
+        }
+    }
+
+    // If display is not dirty (e.g. static Wizard, Settings, Update Prompt), DO NOT TOUCH FRAMEBUFFER!
+    if (!isDisplayDirty) {
+        return;
+    }
+
+    isDisplayDirty = false;
 
     switch (currentScreen) {
         case SCREEN_DASHBOARD: renderDashboard();     break;
@@ -2117,6 +2556,9 @@ void updateDisplay() {
         case SCREEN_WIFI:      renderWiFi();          break;
         case SCREEN_SYSTEM:    renderSystem();        break;
         case SCREEN_SETTINGS:  renderSettings();      break;
+        case SCREEN_WIZARD:    renderWizard();        break;
+        case SCREEN_UPDATE_CONFIRM: renderUpdateConfirm(); break;
+        case SCREEN_UPDATE_PROGRESS: renderUpdateProgress(); break;
         default:               renderDashboard();     break;
     }
 
@@ -2135,15 +2577,19 @@ void showToyotaBootSplash() {
 // Screen Navigation Functions
 // =========================================================================
 void nextScreen() {
-    if (isPidConfigOpen) return;
-    currentScreen = static_cast<DisplayScreen>((currentScreen + 1) % SCREEN_COUNT);
+    if (isPidConfigOpen || currentScreen >= SCREEN_WIZARD) return;
+    do {
+        currentScreen = static_cast<DisplayScreen>((currentScreen + 1) % SCREEN_COUNT);
+    } while (!featureSnifferEnabled && currentScreen == SCREEN_SNIFFER);
     wakeScreen();
     Serial.printf("[SWIPE] Switched to Next Screen -> Page %d\n", currentScreen);
 }
 
 void prevScreen() {
-    if (isPidConfigOpen) return;
-    currentScreen = static_cast<DisplayScreen>((currentScreen - 1 + SCREEN_COUNT) % SCREEN_COUNT);
+    if (isPidConfigOpen || currentScreen >= SCREEN_WIZARD) return;
+    do {
+        currentScreen = static_cast<DisplayScreen>((currentScreen - 1 + SCREEN_COUNT) % SCREEN_COUNT);
+    } while (!featureSnifferEnabled && currentScreen == SCREEN_SNIFFER);
     wakeScreen();
     Serial.printf("[SWIPE] Switched to Prev Screen <- Page %d\n", currentScreen);
 }
@@ -2151,6 +2597,160 @@ void prevScreen() {
 // =========================================================================
 // Capacitive Touch & Gesture / Button Tap Engine
 // =========================================================================
+// Forward decls for touch handlers
+void handleWizardTouch(int x, int y);
+void handleUpdateConfirmTouch(int x, int y);
+
+void handleWizardTouch(int x, int y) {
+    wakeScreen();
+    if (wizardStep == 0) {
+        // Step 0: Vehicle Select
+        // Option 1: Universal OBD-II (y = 100..185)
+        if (y >= 100 && y <= 185) {
+            strncpy(wizardSelectedProfile, "universal_j1979", sizeof(wizardSelectedProfile) - 1);
+            Serial.println("[WIZARD] Selected Universal OBD-II Profile");
+            markDisplayDirty();
+            return;
+        }
+        // Option 2: Tacoma (y = 195..280)
+        if (y >= 195 && y <= 280) {
+            strncpy(wizardSelectedProfile, "toyota_tacoma_2016_2023", sizeof(wizardSelectedProfile) - 1);
+            Serial.println("[WIZARD] Selected Toyota Tacoma Profile");
+            markDisplayDirty();
+            return;
+        }
+        // Option 3: SD profile (y = 290..375)
+        if (y >= 290 && y <= 375) {
+            if (g_profileCount > 0) {
+                static int sdPickIdx = 0;
+                strncpy(wizardSelectedProfile, g_profileIds[sdPickIdx], sizeof(wizardSelectedProfile) - 1);
+                sdPickIdx = (sdPickIdx + 1) % g_profileCount;
+                Serial.printf("[WIZARD] Selected SD Profile: %s\n", wizardSelectedProfile);
+                markDisplayDirty();
+            }
+            return;
+        }
+        // Button: NEXT (x = 180..620, y = 390..460)
+        if (x >= 180 && x <= 620 && y >= 390 && y <= 460) {
+            wizardStep = 1;
+            Serial.println("[WIZARD] Advance to Step 1: Features");
+            markDisplayDirty();
+            return;
+        }
+    } else if (wizardStep == 1) {
+        // Step 1: Features
+        // Card 0: Wi-Fi (x = 20..390, y = 100..230)
+        if (x >= 20 && x <= 390 && y >= 100 && y <= 230) {
+            featureWifiEnabled = !featureWifiEnabled;
+            Serial.printf("[WIZARD] Toggle Wi-Fi: %s\n", featureWifiEnabled ? "ON" : "OFF");
+            markDisplayDirty();
+            return;
+        }
+        // Card 1: Sniffer (x = 410..780, y = 100..230)
+        if (x >= 410 && x <= 780 && y >= 100 && y <= 230) {
+            featureSnifferEnabled = !featureSnifferEnabled;
+            Serial.printf("[WIZARD] Toggle Sniffer: %s\n", featureSnifferEnabled ? "ON" : "OFF");
+            markDisplayDirty();
+            return;
+        }
+        // Card 2: Datalogger (x = 20..390, y = 245..375)
+        if (x >= 20 && x <= 390 && y >= 245 && y <= 375) {
+            featureLoggerEnabled = !featureLoggerEnabled;
+            Serial.printf("[WIZARD] Toggle Logger: %s\n", featureLoggerEnabled ? "ON" : "OFF");
+            markDisplayDirty();
+            return;
+        }
+        // Card 3: Polling (x = 410..780, y = 245..375)
+        if (x >= 410 && x <= 780 && y >= 245 && y <= 375) {
+            featureListenOnly = !featureListenOnly;
+            Serial.printf("[WIZARD] Toggle ListenOnly: %s\n", featureListenOnly ? "YES" : "NO");
+            markDisplayDirty();
+            return;
+        }
+        // Button < BACK (x = 20..200, y = 395..455)
+        if (x >= 20 && x <= 200 && y >= 395 && y <= 455) {
+            wizardStep = 0;
+            markDisplayDirty();
+            return;
+        }
+        // Button NEXT > (x = 560..780, y = 395..455)
+        if (x >= 560 && x <= 780 && y >= 395 && y <= 455) {
+            wizardStep = 2;
+            markDisplayDirty();
+            return;
+        }
+    } else if (wizardStep == 2) {
+        // Step 2: Mounting & Finish
+        // Button Normal (x = 35..375, y = 150..200)
+        if (x >= 35 && x <= 375 && y >= 150 && y <= 200) {
+            saveDisplayFlipSetting(false);
+            markDisplayDirty();
+            return;
+        }
+        // Button Inverted (x = 405..745, y = 150..200)
+        if (x >= 405 && x <= 745 && y >= 150 && y <= 200) {
+            saveDisplayFlipSetting(true);
+            markDisplayDirty();
+            return;
+        }
+        // Button < BACK (x = 20..200, y = 395..455)
+        if (x >= 20 && x <= 200 && y >= 395 && y <= 455) {
+            wizardStep = 1;
+            markDisplayDirty();
+            return;
+        }
+        // Button FINISH (x = 220..780, y = 395..455)
+        if (x >= 220 && x <= 780 && y >= 395 && y <= 455) {
+            Serial.println("[WIZARD] Completing setup wizard, saving preferences...");
+            preferences.begin("dashview", false);
+            preferences.putBool("setup_done", true);
+            preferences.putString("prof", wizardSelectedProfile);
+            preferences.putBool("wifi_en", featureWifiEnabled);
+            preferences.putBool("sniffer_en", featureSnifferEnabled);
+            preferences.putBool("logger_en", featureLoggerEnabled);
+            preferences.putBool("listen_only", featureListenOnly);
+            preferences.putBool("flip180", isDisplayFlipped);
+            preferences.end();
+            isSetupDone = true;
+
+            applyProfileSelection(wizardSelectedProfile);
+            if (!featureWifiEnabled) {
+                WiFi.mode(WIFI_OFF);
+            } else {
+                initWiFiStreaming();
+            }
+            currentScreen = SCREEN_DASHBOARD;
+            markDisplayDirty();
+            return;
+        }
+    }
+}
+
+void handleUpdateConfirmTouch(int x, int y) {
+    wakeScreen();
+    // Install Update button (x = 80..380, y = 290..360)
+    if (x >= 80 && x <= 380 && y >= 290 && y <= 360) {
+        Serial.printf("[SD-OTA] User confirmed installation of %s\n", sdUpdateFile);
+        currentScreen = SCREEN_UPDATE_PROGRESS;
+        updateDisplay();
+        performSdUpdate(sdUpdateFile, [](size_t written, size_t total) {
+            updateProgressPercent = (written * 100) / total;
+            static int lastP = -1;
+            if (updateProgressPercent != lastP && (updateProgressPercent % 5 == 0)) {
+                lastP = updateProgressPercent;
+                renderUpdateProgress();
+            }
+        });
+        return;
+    }
+    // Cancel / Skip button (x = 420..720, y = 290..360)
+    if (x >= 420 && x <= 720 && y >= 290 && y <= 360) {
+        Serial.println("[SD-OTA] User cancelled/skipped firmware update.");
+        currentScreen = isSetupDone ? SCREEN_DASHBOARD : SCREEN_WIZARD;
+        return;
+    }
+}
+
 #define SWIPE_MIN_DIST_PX 400  // Must swipe at least half of the 800px screen width
 
 void handleTouch() {
@@ -2178,6 +2778,16 @@ void handleTouch() {
         int deltaX = touchLastX - touchStartX;
         int deltaY = touchLastY - touchStartY;
         unsigned long duration = millis() - touchStartTime;
+
+        // Route Wizard & Update screens directly
+        if (currentScreen == SCREEN_WIZARD) {
+            handleWizardTouch(touchLastX, touchLastY);
+            return;
+        }
+        if (currentScreen == SCREEN_UPDATE_CONFIRM) {
+            handleUpdateConfirmTouch(touchLastX, touchLastY);
+            return;
+        }
 
         // Custom Dash drags / editor taps consume the whole gesture
         if (currentScreen == SCREEN_CUSTOM || g_cdEditorKind != CD_EDIT_NONE) {
@@ -2328,11 +2938,13 @@ void handleTouch() {
                 // Card 1: 180-deg Display Flip (y: 52 - 138)
                 if (touchLastY >= 52 && touchLastY <= 138) {
                     saveDisplayFlipSetting(!isDisplayFlipped);
+                    markDisplayDirty();
                     return;
                 }
                 // Card 2: Backlight ON/OFF toggle (y: 146 - 232)
                 else if (touchLastY >= 146 && touchLastY <= 232) {
                     saveBacklightSetting(!backlightEnabled);
+                    markDisplayDirty();
                     return;
                 }
                 // Card 3: Vehicle Profile cells (y: 272 - 314)
@@ -2345,14 +2957,22 @@ void handleTouch() {
                             if (!applyProfileSelection(g_profileIds[cell]))
                                 Serial.printf("[PROFILE] Select '%s' failed - keeping current profile.\n", g_profileIds[cell]);
                         }
+                        markDisplayDirty();
                     }
                     return;
                 }
-                // Card 4: Reboot Controller (y: 358 - 410)
-                else if (touchLastY >= 358 && touchLastY <= 410) {
-                    Serial.println("[SETTINGS] Reboot requested -> Restarting ESP32...");
-                    delay(200);
-                    ESP.restart();
+                // Card 4: Bench Telemetry Simulator toggle (y: 344 - 384)
+                else if (touchLastY >= 344 && touchLastY <= 384) {
+                    toggleDemoMode();
+                    markDisplayDirty();
+                    return;
+                }
+                // Card 5: Run Initial Setup Wizard (y: 388 - 428)
+                else if (touchLastY >= 388 && touchLastY <= 428) {
+                    Serial.println("[SETTINGS] Launching Initial Setup Wizard...");
+                    currentScreen = SCREEN_WIZARD;
+                    wizardStep = 0;
+                    markDisplayDirty();
                     return;
                 }
             }
@@ -2451,9 +3071,9 @@ void setup() {
     delay(200);
     Serial.printf("\n=== %s %s (ESP32-S3 Touch LCD 4.3B) ===\n", APP_NAME, APP_VERSION_STR);
 
-    // 0. Load persistent settings (180-deg flip & backlight)
+    // 0. Load persistent settings
     loadSettings();
-    loadDefaultProfile();
+    applyProfileSelection(activeProfileId);
     Serial.printf("[PROFILE] Vehicle Profile Loaded: %s (%s)\n", getProfileName(), getProfileId());
 
     // 1. Shared I2C bus: GT911 touch + CH422G expander + PCF85063 RTC
@@ -2491,12 +3111,16 @@ void setup() {
 
     // 7. CAN Bus & MicroSD
     initCAN();
-    mountSD();
-
-    // 7b. Vehicle profile override: /profiles/<id>.json on SD, id chosen in
-    // NVS key "prof". The built-in default loaded in step 0 stays in effect
-    // when no card / no selection / invalid JSON.
-    scanProfileDir();
+    if (mountSD()) {
+        scanProfileDir();
+        // Check for MicroSD firmware update drop (/dashview.bin, /update.bin)
+        if (checkSdUpdateAvailable(sdUpdateFile, sizeof(sdUpdateFile), &sdUpdateSize)) {
+            Serial.printf("[SD-OTA] Firmware binary detected on MicroSD: %s (%u KB)\n",
+                          sdUpdateFile, (uint32_t)(sdUpdateSize / 1024));
+            currentScreen = SCREEN_UPDATE_CONFIRM;
+            isBootSplashActive = false;
+        }
+    }
     if (sdMounted) {
         preferences.begin("dashview", true);
         String profId = preferences.getString("prof", "");
@@ -2534,27 +3158,25 @@ void loop() {
         handleWiFiClients();
         processCAN();
 
-        // 1. Check if screen tapped
+        // Check if screen tapped or auto-timeout (2.5s)
         int touchX = 0, touchY = 0;
-        if (pollTouch(touchX, touchY)) {
-            currentScreen = SCREEN_DASHBOARD; // ALWAYS enter Dashboard (Page 0)
-            isBootSplashActive = false;
-            wasTouched = false;
-            wakeScreen();
-            lastUserActivityTime = millis();
-            Serial.println("[SPLASH] Screen tapped -> Exiting splash to Main Dashboard (Page 0).");
-            delay(120);
-            return;
-        }
+        bool tapped = pollTouch(touchX, touchY);
+        bool timeout = (millis() >= 2500);
 
-        // 2. Check if engine started (RPM > 0 or Speed > 0)
-        if (vehicleData.rpm > 0 || vehicleData.speedMph > 0) {
-            currentScreen = SCREEN_DASHBOARD; // ALWAYS enter Dashboard (Page 0)
+        if (tapped || timeout || vehicleData.rpm > 0 || vehicleData.speedMph > 0) {
             isBootSplashActive = false;
             wasTouched = false;
             wakeScreen();
             lastUserActivityTime = millis();
-            Serial.printf("[SPLASH] Engine started (RPM: %d) -> Exiting splash to Main Dashboard (Page 0).\n", vehicleData.rpm);
+            if (!isSetupDone) {
+                currentScreen = SCREEN_WIZARD;
+                wizardStep = 0;
+                Serial.println("[SPLASH] Exiting splash -> Launching First-Time Setup Wizard.");
+            } else {
+                currentScreen = SCREEN_DASHBOARD;
+                Serial.println("[SPLASH] Exiting splash -> Main Dashboard.");
+            }
+            delay(100);
             return;
         }
 
@@ -2563,6 +3185,7 @@ void loop() {
 
     handleTouch();
     handleWiFiClients();
+    updateTelemetrySimulator();
     processCAN();
     processDatalogging();
 
@@ -2592,9 +3215,8 @@ void loop() {
     }
 
     // 30 FPS Display Refresh
-    // Sync to panel refresh rate (approx 60 Hz) to avoid flicker.
     static uint32_t lastFrameTime = 0;
-    const uint32_t frameInterval = 16; // ~60 FPS (1000ms / 60)
+    const uint32_t frameInterval = 33; // ~30 FPS
     if (millis() - lastFrameTime >= frameInterval) {
         lastFrameTime = millis();
         syncProfileSignals();

@@ -185,6 +185,27 @@ static void populateJ1979Base() {
 }
 
 
+static const char kUniversalJ1979Profile[] PROGMEM = R"json(
+{
+  "id": "universal_j1979",
+  "name": "Universal OBD-II / J1979",
+  "match": { "make": "Universal", "model": "All 2008+ (CAN)", "year_min": 2008, "year_max": 2030, "gen": "All" },
+  "inherits": "j1979_base",
+  "assets": { "logo": "dashview", "brand_color": "#2563EB" },
+  "bus": {
+    "physical": "classic",
+    "arb_bitrate": 500000,
+    "fd_data_bitrate": null,
+    "protocol": "iso_tp",
+    "req_id": "0x7E0",
+    "resp_id": "0x7E8",
+    "func_id": "0x7DF",
+    "listen_only": false
+  },
+  "signals": []
+}
+)json";
+
 static const char kDefaultToyotaProfile[] PROGMEM = R"json(
 {
   "id": "toyota_tacoma_2016_2023",
@@ -214,6 +235,39 @@ static const char kDefaultToyotaProfile[] PROGMEM = R"json(
   ]
 }
 )json";
+
+static const BuiltinProfileInfo s_builtinProfiles[] = {
+    {
+        "universal_j1979",
+        "Universal OBD-II (All Makes 2008+)",
+        "Universal",
+        "CAN Standard",
+        "2008+"
+    },
+    {
+        "toyota_tacoma_2016_2023",
+        "Toyota Tacoma (3rd Gen)",
+        "Toyota",
+        "Tacoma",
+        "2016-2023"
+    }
+};
+
+int getBuiltinProfileCount() {
+    return sizeof(s_builtinProfiles) / sizeof(s_builtinProfiles[0]);
+}
+
+const BuiltinProfileInfo* getBuiltinProfileInfo(int idx) {
+    if (idx < 0 || idx >= getBuiltinProfileCount()) return nullptr;
+    return &s_builtinProfiles[idx];
+}
+
+bool loadBuiltinProfile(const char* id) {
+    if (!id || id[0] == 0) return false;
+    if (strcmp(id, "universal_j1979") == 0) return loadProfile(kUniversalJ1979Profile);
+    if (strcmp(id, "toyota_tacoma_2016_2023") == 0) return loadProfile(kDefaultToyotaProfile);
+    return false;
+}
 
 bool loadDefaultProfile() {
     return loadProfile(kDefaultToyotaProfile);
