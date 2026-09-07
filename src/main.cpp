@@ -2592,8 +2592,11 @@ void loop() {
     }
 
     // 30 FPS Display Refresh
-    if (millis() - lastDisplayUpdate >= 33) {
-        lastDisplayUpdate = millis();
+    // Sync to panel refresh rate (approx 60 Hz) to avoid flicker.
+    static uint32_t lastFrameTime = 0;
+    const uint32_t frameInterval = 16; // ~60 FPS (1000ms / 60)
+    if (millis() - lastFrameTime >= frameInterval) {
+        lastFrameTime = millis();
         syncProfileSignals();
         updateDisplay();
     }
