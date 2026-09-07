@@ -47,6 +47,46 @@ static float cdVal(const CdGauge& g) {
     return 0; // GEAR
 }
 static bool cdIsGear(int pidIdx) { return !strcmp(availablePids[pidIdx].idStr, "GEAR"); }
+
+// ---- Profile-signal-backed gauges -----------------------------------------
+// A gauge with a non-empty sigKey reads its value from the profile engine
+// instead of availablePids[pid]/vehicleData. This is what makes "support a
+// new car = drop a JSON on the SD card" work for the Custom Dash too.
+static bool cdIsSig(const CdGauge& g) { return g.sigKey[0] != '\0'; }
+
+// unit text for signal-backed gauges; one shared buffer is fine — the UI is
+// single-threaded and every draw path re-copies before formatting.
+static char s_cdSigUnit[12];
+
+static CdMeta cdSigMeta(const char* key) {
+    SignalMeta m{};
+    s_cdSigUnit[0] = 0;
+    if (!getSignalMeta(key, &m)) return { "", 0, 100, 0 };
+    CdMeta out{};
+    strncpy(s_cdSigUnit, m.unit, sizeof(s_cdSigUnit) - 1);
+    s_cdSigUnit[sizeof(s_cdSigUnit) - 1] = 0;
+    out.unit = s_cdSigUnit;
+    out.mn = m.hasClampMin ? m.clampMin : 0;
+    out.mx = m.hasClampMax ? m.clampMax : (m.hasClampMin ? m.clampMin + 100 : 100);
+    out.dec = m.decimals;
+    return out;
+}
+// value; false when the signal is unknown or stale (draw "--")
+static bool cdSigVal(const CdGauge& g, float& v) {
+    if (signalAge(g.sigKey, millis()) >= 2000) return false;
+    v = getSignal(g.sigKey);
+    return true;
+}
+// enum text ("" when the signal is numeric or stale) — same 2 s gate as
+// cdSigVal so a gauge can't keep showing old enum text off the bus
+static char s_cdSigTextBuf[PROFILE_TEXT_MAX_LEN];
+static const char* cdSigText(const CdGauge& g) {
+    s_cdSigTextBuf[0] = 0;
+    if (signalAge(g.sigKey, millis()) >= 2000) return s_cdSigTextBuf;
+    strncpy(s_cdSigTextBuf, getSignalText(g.sigKey), sizeof(s_cdSigTextBuf) - 1);
+    s_cdSigTextBuf[sizeof(s_cdSigTextBuf) - 1] = 0;
+    return s_cdSigTextBuf;
+}
 static uint16_t cdColor(CdColor c) {
     switch (c) {
         case CD_COL_CYAN:   return C_TEXT_CYAN;
@@ -60,6 +100,12 @@ static uint16_t cdColor(CdColor c) {
 // warning active = value outside [warnLo, warnHi]; warnHi<=-1e30 => disabled
 static bool cdWarnOn(const CdGauge& g) {
     if (g.warnMode == CD_WARN_OFF || g.warnHi <= -1e29f) return false;
+    if (cdIsSig(g)) {
+        if (cdSigText(g)[0]) return false;   // enum text never warns
+        float v;
+        if (!cdSigVal(g, v)) return false;   // stale never warns
+        return (v < g.warnLo || v > g.warnHi);
+    }
     float v = cdVal(g);
     return (v < g.warnLo || v > g.warnHi);
 }
@@ -120,6 +166,16 @@ static CdGauge cdDefaultGauge(int pidIdx, int cx, int cy, int cw, int ch) {
     g.warnMode = CD_WARN_FLASH; g.warnColor = CD_COL_RED;
     return g;
 }
+static CdGauge cdDefaultSigGauge(const char* key, int cx, int cy, int cw, int ch) {
+    CdGauge g{}; g.valid = true; g.pid = 0;
+    strncpy(g.sigKey, key, sizeof(g.sigKey) - 1);
+    g.style = CD_STYLE_NUMBER; g.x = cx; g.y = cy; g.w = cw; g.h = ch;
+    CdMeta m = cdSigMeta(key);
+    g.minVal = m.mn; g.maxVal = m.mx; g.decimals = m.dec > 2 ? 2 : m.dec;
+    g.warnLo = m.mn; g.warnHi = -1e30f;
+    g.warnMode = CD_WARN_FLASH; g.warnColor = CD_COL_RED;
+    return g;
+}
 // find first free cell scanning the grid for a w x h block
 static bool cdFreeBlock(int w, int h, int& ox, int& oy) {
     for (int y = 0; y + h <= CD_ROWS; y++)
@@ -148,6 +204,16 @@ void cdSeedDefaults() {
 // (called from sendToyotaObdQueries to append dash PIDs to the query set)
 void cdAppendQueries(uint8_t modes[], uint8_t pids[], int& count, int cap) {
     for (int i = 0; i < g_cdGaugeCount && count < cap; i++) {
+        // profile-signal gauge: poll only if its signal is obd_poll kind
+        if (cdIsSig(g_cdGauges[i])) {
+            uint8_t m, p;
+            if (!profileSignalPollId(g_cdGauges[i].sigKey, &m, &p)) continue;  // broadcast = no poll
+            bool exists = false;
+            for (int q = 0; q < count; q++)
+                if (modes[q] == m && pids[q] == p) { exists = true; break; }
+            if (!exists) { modes[count] = m; pids[count] = p; count++; }
+            continue;
+        }
         uint8_t idx = g_cdGauges[i].pid;
         if (availablePids[idx].mode == 0x00) continue;
         bool exists = false;
@@ -175,10 +241,22 @@ static void cdDrawGauge(const CdGauge& g) {
     canvas.fillRoundRect(x, y, w, h, 8, bg);
     canvas.drawRoundRect(x, y, w, h, 8, border);
 
-    CdMeta m = cdMeta(g.pid);
-    const char* label = availablePids[g.pid].idStr;
-    bool gear = cdIsGear(g.pid);
-    float v = cdVal(g);
+    CdMeta m = cdIsSig(g) ? cdSigMeta(g.sigKey) : cdMeta(g.pid);
+    char labelBuf[24];
+    const char* label = cdIsSig(g) ? (strncpy(labelBuf, g.sigKey, 23), labelBuf[23] = 0, labelBuf)
+                                   : availablePids[g.pid].idStr;
+    bool gear = !cdIsSig(g) && cdIsGear(g.pid);
+    float v = 0;
+    bool stale = false;
+    bool isText = false;
+    const char* txt = "";
+    if (cdIsSig(g)) {
+        txt = cdSigText(g);
+        isText = txt[0] != '\0';
+        if (!isText) stale = !cdSigVal(g, v);
+    } else {
+        v = cdVal(g);
+    }
     uint16_t valColor = warn ? (flashOn ? TFT_BLACK : C_TEXT_WHITE) : C_TEXT_WHITE;
 
     canvas.setFont(&fonts::Font2);
@@ -186,11 +264,16 @@ static void cdDrawGauge(const CdGauge& g) {
     canvas.drawString(label, x + 8, y + 6);
 
     char buf[24];
-    if (gear) {
+    if (isText) {
+        snprintf(buf, sizeof(buf), "%s", txt);
+    } else if (gear) {
         snprintf(buf, sizeof(buf), "%s%s", vehicleData.gear,
                  (vehicleData.tccLocked && vehicleData.gear[0] >= '1' && vehicleData.gear[0] <= '6') ? "L" : "");
+    } else if (stale) {
+        snprintf(buf, sizeof(buf), "--");
     } else {
         snprintf(buf, sizeof(buf), "%.*f%s", g.decimals, v, m.unit[0] ? " " : "");
+        if (m.unit[0]) strncat(buf, m.unit, sizeof(buf) - strlen(buf) - 1);
     }
 
     int valSize = (h > 70) ? 2 : ((h > 46) ? 1 : 0);
@@ -285,6 +368,29 @@ static const int E_TOP = 52, E_ROW = 62;
 static int  e_rowY(int r) { return E_TOP + 40 + r * E_ROW; }
 static bool inRect(int px, int py, int x, int y, int w, int h) { return px>=x && px<=x+w && py>=y && py<=y+h; }
 
+// ADD picker: page 0 lists legacy PIDs, then every signal the active profile
+// decodes. 12 per page; PREV/NEXT at the bottom bar.
+#define CD_PICKER_PER_PAGE 12
+static int g_cdPickerPage = 0;
+static int cdPickerTotal() { return (int)PID_COUNT + getSignalCount(); }
+// item kind: 0 = legacy pid (idx = pid), 1 = profile signal (idx = signal)
+static int cdPickerItem(int slot, int& idx, char* label, int labelSz) {
+    if (slot < 0 || slot >= cdPickerTotal()) return -1;
+    if (slot < (int)PID_COUNT) {
+        idx = slot;
+        snprintf(label, labelSz, "%s", availablePids[slot].label);
+        return 0;
+    }
+    const SignalValue* s = getSignalByIndex(slot - (int)PID_COUNT);
+    if (!s) return -1;
+    idx = slot - (int)PID_COUNT;
+    SignalMeta m{};
+    getSignalMeta(s->key, &m);
+    if (m.unit[0]) snprintf(label, labelSz, "%.18s (%.6s)", s->key, m.unit);
+    else           snprintf(label, labelSz, "%.20s", s->key);
+    return 1;
+}
+
 static void cdEditorHit(int x, int y);  // forward
 
 void renderCustomDashEditor() {
@@ -292,20 +398,30 @@ void renderCustomDashEditor() {
     canvas.fillRect(0, E_TOP, 800, 480 - E_TOP - 40, canvas.color565(14, 16, 22));
 
     if (g_cdEditorKind == CD_EDIT_ADD) {
+        char pbuf[48];
         canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
-        canvas.drawString("Choose a parameter to add:", 34, E_TOP + 12);
+        snprintf(pbuf, sizeof(pbuf), "Choose a parameter (page %d/%d):", g_cdPickerPage + 1,
+                 (cdPickerTotal() + CD_PICKER_PER_PAGE - 1) / CD_PICKER_PER_PAGE);
+        canvas.drawString(pbuf, 34, E_TOP + 12);
         int colW = 250, rowH = 46, sx = 12, sy = E_TOP + 44;
-        for (size_t i = 0; i < PID_COUNT; i++) {
-            int col = i % 3, row = i / 3;
+        for (int slot = 0; slot < CD_PICKER_PER_PAGE; slot++) {
+            int itemIdx; char lbl[26];
+            int kind = cdPickerItem(g_cdPickerPage * CD_PICKER_PER_PAGE + slot, itemIdx, lbl, sizeof(lbl));
+            if (kind < 0) continue;
+            int col = slot % 3, row = slot / 3;
             int bx = sx + col * (colW + 8), by = sy + row * (rowH + 6);
-            canvas.fillRoundRect(bx, by, colW, rowH, 6, C_CARD_BG);
-            canvas.drawRoundRect(bx, by, colW, rowH, 6, C_CARD_BORDER);
+            canvas.fillRoundRect(bx, by, colW, rowH, 6, kind == 1 ? canvas.color565(20, 32, 26) : C_CARD_BG);
+            canvas.drawRoundRect(bx, by, colW, rowH, 6, kind == 1 ? canvas.color565(60, 160, 90) : C_CARD_BORDER);
             canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font2);
-            canvas.drawString(availablePids[i].label, bx + 10, by + 15);
+            canvas.drawString(lbl, bx + 10, by + 15);
         }
-        // Cancel button (bottom)
-        canvas.fillRoundRect(436, 412, 352, 44, 6, canvas.color565(45, 20, 25));
+        // Page nav + Cancel (bottom)
+        canvas.fillRoundRect(12, 412, 200, 44, 6, canvas.color565(25, 35, 52));
         canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font4);
+        canvas.drawCenterString("PREV", 112, 420);
+        canvas.fillRoundRect(224, 412, 200, 44, 6, canvas.color565(25, 35, 52));
+        canvas.drawCenterString("NEXT", 324, 420);
+        canvas.fillRoundRect(436, 412, 352, 44, 6, canvas.color565(45, 20, 25));
         canvas.drawCenterString("CANCEL", 612, 420);
         return;
     }
@@ -316,7 +432,9 @@ void renderCustomDashEditor() {
     CdGauge& g = g_cdGauges[g_cdEditorIdx];
     char buf[48];
     canvas.setFont(&fonts::Font4); canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString(availablePids[g.pid].label, 34, E_TOP + 12);
+    if (cdIsSig(g)) snprintf(buf, sizeof(buf), "%s", g.sigKey);
+    else            snprintf(buf, sizeof(buf), "%s", availablePids[g.pid].label);
+    canvas.drawString(buf, 34, E_TOP + 12);
     // DELETE button (top-right)
     canvas.fillRoundRect(656, E_TOP + 6, 132, 34, 6, canvas.color565(45, 18, 22));
     canvas.drawRoundRect(656, E_TOP + 6, 132, 34, 6, C_TRD_RED);
@@ -402,18 +520,34 @@ void renderCustomDashEditor() {
 // editor hit-test (returns true if consumed)
 static void cdEditorHit(int x, int y) {
     if (g_cdEditorKind == CD_EDIT_ADD) {
+        // page nav
+        if (inRect(x, y, 12, 412, 200, 44)) {
+            if (g_cdPickerPage > 0) g_cdPickerPage--;
+            return;
+        }
+        if (inRect(x, y, 224, 412, 200, 44)) {
+            int pages = (cdPickerTotal() + CD_PICKER_PER_PAGE - 1) / CD_PICKER_PER_PAGE;
+            if (g_cdPickerPage + 1 < pages) g_cdPickerPage++;
+            return;
+        }
         int colW = 250, rowH = 46, sx = 12, sy = E_TOP + 44;
-        for (size_t i = 0; i < PID_COUNT; i++) {
-            int col = i % 3, row = i / 3;
+        for (int slot = 0; slot < CD_PICKER_PER_PAGE; slot++) {
+            int col = slot % 3, row = slot / 3;
             int bx = sx + col * (colW + 8), by = sy + row * (rowH + 6);
-            if (inRect(x, y, bx, by, colW, rowH)) {
-                int ox, oy;
-                if (g_cdGaugeCount < CD_MAX_GAUGES && cdFreeBlock(2, 1, ox, oy))
-                    g_cdGauges[g_cdGaugeCount++] = cdDefaultGauge((int)i, ox, oy, 2, 1);
-                cdSavePrefs();
-                g_cdEditorKind = CD_EDIT_NONE;
-                return;
+            if (!inRect(x, y, bx, by, colW, rowH)) continue;
+            int itemIdx; char lbl[26];
+            int kind = cdPickerItem(g_cdPickerPage * CD_PICKER_PER_PAGE + slot, itemIdx, lbl, sizeof(lbl));
+            if (kind < 0) return;
+            if (g_cdGaugeCount >= CD_MAX_GAUGES || !cdFreeBlock(2, 1, x, y)) { g_cdEditorKind = CD_EDIT_NONE; return; }
+            if (kind == 0)
+                g_cdGauges[g_cdGaugeCount++] = cdDefaultGauge(itemIdx, x, y, 2, 1);
+            else {
+                const SignalValue* s = getSignalByIndex(itemIdx);
+                if (s) g_cdGauges[g_cdGaugeCount++] = cdDefaultSigGauge(s->key, x, y, 2, 1);
             }
+            cdSavePrefs();
+            g_cdEditorKind = CD_EDIT_NONE;
+            return;
         }
         if (inRect(x, y, 436, 412, 352, 44)) g_cdEditorKind = CD_EDIT_NONE;
         return;

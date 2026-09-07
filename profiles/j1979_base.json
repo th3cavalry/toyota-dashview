@@ -1,0 +1,28 @@
+{
+  "id": "j1979_base",
+  "name": "SAE J1979 OBD-II Universal Baseline",
+  "match": { "make": null, "model": null, "year_min": 1996, "year_max": 2099, "gen": null },
+  "bus": {
+    "physical": "classic",
+    "arb_bitrate": 500000,
+    "fd_data_bitrate": null,
+    "protocol": "iso_tp",
+    "req_id": "0x7DF",
+    "resp_id": null,
+    "func_id": "0x7DF",
+    "listen_only": false
+  },
+  "_note": "This file is not selected by a customer. It is the inherited signal set every real profile pulls in via \"inherits\": \"j1979_base\". Formulas are SAE J1979 and are IDENTICAL across all OBD-II compliant makes, so no per-make re-decode of basic signals is ever needed. a/b/c follow value = a*(A|B) + c.",
+  "signals": [
+    { "key": "rpm",            "kind": "obd_poll", "mode": "0x01", "pid": "0x0C", "a": 0.25,  "b": 0,   "c": 0,   "unit": "",     "decimals": 0 },
+    { "key": "speed_kmh",      "kind": "obd_poll", "mode": "0x01", "pid": "0x0D", "a": 1,     "b": 0,   "c": 0,   "unit": "km/h", "decimals": 0 },
+    { "key": "coolant",        "kind": "obd_poll", "mode": "0x01", "pid": "0x05", "a": 1,     "b": 0,   "c": -40, "unit": "C",    "decimals": 0 },
+    { "key": "iat",            "kind": "obd_poll", "mode": "0x01", "pid": "0x0F", "a": 1,     "b": 0,   "c": -40, "unit": "C",    "decimals": 0 },
+    { "key": "throttle",       "kind": "obd_poll", "mode": "0x01", "pid": "0x11", "a": 0.392, "b": 0,   "c": 0,   "unit": "%",    "decimals": 0 },
+    { "key": "load",           "kind": "obd_poll", "mode": "0x01", "pid": "0x04", "a": 0.392, "b": 0,   "c": 0,   "unit": "%",    "decimals": 0 },
+    { "key": "timing",         "kind": "obd_poll", "mode": "0x01", "pid": "0x0E", "a": 0.5,   "b": 0,   "c": -64, "unit": "deg",  "decimals": 1 },
+    { "key": "maf",            "kind": "obd_poll", "mode": "0x01", "pid": "0x10", "a": 0.01,  "b": 0,   "c": 0,   "unit": "g/s",  "decimals": 1 },
+    { "key": "afr_actual",     "kind": "obd_poll", "mode": "0x01", "pid": "0x24", "a": 0.0305, "b": 0,  "c": 0,   "unit": ":1",   "decimals": 1, "lambda_to_afr": 14.7 },
+    { "key": "afr_commanded",  "kind": "obd_poll", "mode": "0x01", "pid": "0x44", "a": 0.0305, "b": 0,  "c": 0,   "unit": ":1",   "decimals": 1, "lambda_to_afr": 14.7 }
+  ]
+}

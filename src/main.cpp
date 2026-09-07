@@ -12,6 +12,7 @@
 #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
 #include "version.h"
 #include "toyota_splash.h"
+#include "profile.h"
 #include "custom_dash.h"   // Custom Dash API (impl included later, post-palette)
 
 // Persistent Settings (Flash NVS)
@@ -174,6 +175,106 @@ DatalogPid availablePids[] = {
 #define PID_COUNT (sizeof(availablePids) / sizeof(availablePids[0]))
 
 bool isPidConfigOpen = false;        // Is the PID selection modal/view open
+
+// ---- Datalog selection by PROFILE SIGNAL KEY (NVS: "dl_set" + "dl_sel") ----
+// Datalog columns, polls, and the picker all follow the active vehicle
+// profile; selection is stored by key (indices shift between profiles).
+// g_dlSelCount == -1 => no explicit choice yet: every signal is logged.
+// If a profile hot-swap leaves zero selected keys present, we fall back to
+// logging everything rather than writing an empty CSV.
+static char g_dlSel[PROFILE_MAX_SIGNALS][24];
+static int  g_dlSelCount  = -1;
+static bool g_dlSelLoaded = false;
+static char g_dlSelProf[24] = "";   // profile the selection was made against
+
+static void dlSelSave() {
+    String s;
+    for (int i = 0; i < g_dlSelCount; i++) { if (i) s += ','; s += g_dlSel[i]; }
+    preferences.begin("dashview", false);
+    preferences.putBool("dl_set", g_dlSelCount >= 0);
+    preferences.putString("dl_sel", s);
+    preferences.putString("dl_prof", getProfileId());
+    preferences.end();
+    strncpy(g_dlSelProf, getProfileId(), sizeof(g_dlSelProf) - 1);
+}
+static void dlSelLoad() {
+    if (g_dlSelLoaded) return;
+    g_dlSelLoaded = true;
+    preferences.begin("dashview", true);
+    bool set = preferences.getBool("dl_set", false);
+    String s = preferences.getString("dl_sel", "");
+    preferences.getString("dl_prof", "").toCharArray(g_dlSelProf, sizeof(g_dlSelProf));
+    preferences.end();
+    g_dlSelCount = set ? 0 : -1;
+    if (!set) return;
+    int start = 0;
+    while (start < (int)s.length() && g_dlSelCount < PROFILE_MAX_SIGNALS) {
+        int comma = s.indexOf(',', start);
+        if (comma < 0) comma = s.length();
+        if (comma > start) {
+            s.substring(start, comma).toCharArray(g_dlSel[g_dlSelCount], sizeof(g_dlSel[0]));
+            g_dlSel[g_dlSelCount][sizeof(g_dlSel[0]) - 1] = 0;
+            g_dlSelCount++;
+        }
+        start = comma + 1;
+    }
+}
+static bool dlSelEnabledKey(const char* key) {
+    for (int i = 0; i < g_dlSelCount; i++)
+        if (!strcmp(g_dlSel[i], key)) return true;
+    return false;
+}
+static void dlSelMaterialize() {  // expand "all" (-1) into explicit current keys
+    if (g_dlSelCount >= 0) return;
+    g_dlSelCount = 0;
+    for (int i = 0; i < getSignalCount() && g_dlSelCount < PROFILE_MAX_SIGNALS; i++) {
+        const SignalValue* s = getSignalByIndex(i);
+        if (!s) continue;
+        strncpy(g_dlSel[g_dlSelCount], s->key, sizeof(g_dlSel[0]) - 1);
+        g_dlSel[g_dlSelCount][sizeof(g_dlSel[0]) - 1] = 0;
+        g_dlSelCount++;
+    }
+}
+static void dlSelToggleSig(int sigIdx) {
+    const SignalValue* s = getSignalByIndex(sigIdx);
+    if (!s) return;
+    dlSelLoad();
+    dlSelMaterialize();
+    for (int i = 0; i < g_dlSelCount; i++) {
+        if (strcmp(g_dlSel[i], s->key)) continue;
+        for (int j = i; j < g_dlSelCount - 1; j++) strcpy(g_dlSel[j], g_dlSel[j + 1]);
+        g_dlSelCount--;
+        dlSelSave();
+        return;
+    }
+    if (g_dlSelCount < PROFILE_MAX_SIGNALS) {
+        strncpy(g_dlSel[g_dlSelCount], s->key, sizeof(g_dlSel[0]) - 1);
+        g_dlSel[g_dlSelCount][sizeof(g_dlSel[0]) - 1] = 0;
+        g_dlSelCount++;
+    }
+    dlSelSave();
+}
+static void dlSelAll()  { dlSelLoad(); g_dlSelCount = -1; dlSelSave(); }
+static void dlSelNone() { dlSelLoad(); g_dlSelCount = 0;  dlSelSave(); }
+static bool dlSelAnyInProfile() {  // does the explicit selection hit the profile?
+    for (int i = 0; i < getSignalCount(); i++) {
+        const SignalValue* s = getSignalByIndex(i);
+        if (s && dlSelEnabledKey(s->key)) return true;
+    }
+    return false;
+}
+// Master question for column/poll/UI: is this signal logged right now?
+// A stored selection made against a DIFFERENT profile that matches nothing
+// here (e.g. tacoma picks, then swap to a Honda) falls back to logging
+// everything; an explicit selection on the current profile is always honored,
+// including the empty one (NONE).
+static bool dlLogThis(const char* key) {
+    dlSelLoad();
+    if (g_dlSelCount < 0) return true;
+    if (dlSelEnabledKey(key)) return true;
+    if (strcmp(g_dlSelProf, getProfileId()) != 0 && !dlSelAnyInProfile()) return true;
+    return false;
+}
 bool isRawSnifferModalOpen = false;  // Is the floating raw packet terminal modal open
 bool isSnifferPaused = false;        // Freeze live frame view for inspection
 bool isBootSplashActive = true;      // Keep boot splash until screen tapped or engine starts (RPM > 0)
@@ -332,9 +433,6 @@ void handleWiFiClients() {
 // =========================================================================
 // CAN Driver Initialization & Toyota OBD Queries
 // =========================================================================
-#define OBD_REQUEST_ID  0x7E0
-#define OBD_RESPONSE_ID 0x7E8
-
 void initCAN() {
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
@@ -359,8 +457,46 @@ void initCAN() {
     }
 }
 
+// =========================================================================
+// TX failsafe: a moving vehicle's bus outranks our gauges. Any error
+// activity (error-passive alert or non-zero TX error counter) silences OBD
+// polling; it auto-resumes only after TXERROR_COOLDOWN_MS of clean bus.
+// =========================================================================
+static const unsigned long TXERROR_COOLDOWN_MS = 5000;
+static unsigned long txInhibitUntilMs = 0;
+static bool txInhibitLogged = false;
+
+static void noteTxError(const char* reason) {
+    txInhibitUntilMs = millis() + TXERROR_COOLDOWN_MS;
+    if (!txInhibitLogged) {
+        Serial.printf("[CAN-TX] SAFETY: OBD polling paused 5s (%s).\n", reason);
+        txInhibitLogged = true;
+    }
+}
+
+// Polls may only go out when: profile allows TX (not listen-only), the bus
+// has been quiet of TX errors for the cooldown window, and the controller is
+// error-active with near-zero TX error count.
+static bool obdTxCleared() {
+    if (isListenOnly()) return false;
+    if ((long)(millis() - txInhibitUntilMs) < 0) return false;
+    twai_status_info_t st;
+    if (twai_get_status_info(&st) == ESP_OK) {
+        if (st.state != TWAI_STATE_RUNNING || st.tx_error_counter > 8 || st.rx_error_counter > 8) {
+            noteTxError("TEC/REC elevated");
+            return false;
+        }
+    }
+    if (txInhibitLogged) {
+        Serial.println("[CAN-TX] Bus healthy -> OBD polling resumed.");
+        txInhibitLogged = false;
+    }
+    return true;
+}
+
 // Restart the TWAI peripheral after a bus-off (recovery requires stop/start).
 void tryCanRecovery() {
+    noteTxError("bus-off recovery");
     Serial.println("[CAN] Bus-off detected -> attempting TWAI recovery...");
     twai_stop();
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -371,27 +507,23 @@ void tryCanRecovery() {
     }
 }
 
-// Query only active selected PIDs (plus anything the Custom Dash shows)
+// Query only what the log needs (profile signals marked for logging, mapped
+// to their poll ids) plus anything the Custom Dash shows.
 void sendToyotaObdQueries() {
     uint8_t qMode[16];
     uint8_t qPid[16];
     int queryCount = 0;
 
-    for (size_t i = 0; i < PID_COUNT; i++) {
-        if (availablePids[i].enabled && availablePids[i].mode != 0x00) {
-            bool exists = false;
-            for (int q = 0; q < queryCount; q++) {
-                if (qMode[q] == availablePids[i].mode && qPid[q] == availablePids[i].pid) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists && queryCount < 16) {
-                qMode[queryCount] = availablePids[i].mode;
-                qPid[queryCount] = availablePids[i].pid;
-                queryCount++;
-            }
-        }
+    // Profile-driven polls: every obd_poll signal the logger has selected.
+    for (int i = 0; i < getSignalCount(); i++) {
+        const SignalValue* s = getSignalByIndex(i);
+        if (!s || !dlLogThis(s->key)) continue;
+        uint8_t m, p;
+        if (!profileSignalPollId(s->key, &m, &p)) continue;  // broadcast = no poll
+        bool exists = false;
+        for (int q = 0; q < queryCount; q++)
+            if (qMode[q] == m && qPid[q] == p) { exists = true; break; }
+        if (!exists && queryCount < 16) { qMode[queryCount] = m; qPid[queryCount] = p; queryCount++; }
     }
 
     // Gauges on the Custom Dash poll their PIDs even when datalogging off
@@ -402,7 +534,7 @@ void sendToyotaObdQueries() {
     obdQueryIndex = obdQueryIndex % queryCount;
 
     twai_message_t queryMsg;
-    queryMsg.identifier = OBD_REQUEST_ID;
+    queryMsg.identifier = getReqId();
     queryMsg.extd = 0;
     queryMsg.rtr = 0;
     queryMsg.data_length_code = 8;
@@ -431,7 +563,7 @@ unsigned long isotpStartedAt = 0;
 
 void sendIsotpFlowControl() {
     twai_message_t fc = {};
-    fc.identifier = OBD_REQUEST_ID;
+    fc.identifier = getReqId();
     fc.extd = 0;
     fc.rtr = 0;
     fc.data_length_code = 8;
@@ -445,6 +577,8 @@ void sendIsotpFlowControl() {
 // Decode a complete OBD payload: p[0]=mode(+0x40), p[1]=PID, p[2..]=data bytes
 void decodeObdPayload(const uint8_t* p, uint16_t len) {
     if (len < 2) return;
+    // Universal vehicle profile OBD response decode
+    onObdPollResponse(p[0], p[1], &p[2], len >= 2 ? (len - 2) : 0, millis());
     if (p[0] == 0x61 && p[1] == 0xA2 && len >= 4) {
         float rawKclv = p[2] * 0.1f;
         if (rawKclv >= 10.0f && rawKclv <= 30.0f) {
@@ -530,9 +664,11 @@ bool handleObdIsoTp(const twai_message_t &msg) {
 }
 
 void decodeTacomaFrame(const twai_message_t &msg) {
-    if (msg.identifier == OBD_RESPONSE_ID && msg.data_length_code >= 1) {
+    if (msg.identifier == getRespId() && msg.data_length_code >= 1) {
         handleObdIsoTp(msg);
     }
+    // Universal vehicle profile decode
+    onBroadcastFrame(msg.identifier, msg.data, msg.data_length_code, millis());
     if (msg.identifier == 0x0B4 && msg.data_length_code >= 8) {
         // NOTE: scale factor unverified against the Toyota signal spec (0x0B4
         // wheel-speed messages are commonly 0.05625/0.0625 km/h per bit).
@@ -620,11 +756,12 @@ String generateUniqueFileName(const char* prefix) {
     return path;
 }
 
-// Count active PIDs
+// Count active PIDs (profile signals the logger will write)
 int getActivePidCount() {
     int count = 0;
-    for (size_t i = 0; i < PID_COUNT; i++) {
-        if (availablePids[i].enabled) count++;
+    for (int i = 0; i < getSignalCount(); i++) {
+        const SignalValue* s = getSignalByIndex(i);
+        if (s && dlLogThis(s->key)) count++;
     }
     return count;
 }
@@ -690,13 +827,12 @@ bool startDataLogger() {
         char stamp[24];
         activeLogFile.printf("# RTC: %s (fallback = millis since boot)\n",
                              rtcStamp(stamp, sizeof(stamp)) ? stamp : "unset");
-        // Build dynamic CSV header with only selected PIDs
+        // CSV columns = the profile signals selected for logging, in profile
+        // order, so any vehicle profile's signals land in the file untouched.
         String header = "Timestamp_ms";
-        for (size_t i = 0; i < PID_COUNT; i++) {
-            if (availablePids[i].enabled) {
-                header += ",";
-                header += availablePids[i].header;
-            }
+        for (int i = 0; i < getSignalCount(); i++) {
+            const SignalValue* s = getSignalByIndex(i);
+            if (s && dlLogThis(s->key)) { header += ','; header += s->key; }
         }
         activeLogFile.println(header);
         activeLogFile.flush();
@@ -1248,13 +1384,13 @@ void renderDashboard() {
     snprintf(buf, sizeof(buf), "%u KB", ESP.getFreeHeap() / 1024);
     canvas.setTextColor(C_GREEN_OK);
     canvas.drawString(buf, 470, ribY + 8);
-    // RTC stamp
+    // RTC stamp (time only on the ribbon; full timestamp lives on Diagnostics)
     char stamp[24];
     if (rtcStamp(stamp, sizeof(stamp))) {
         canvas.setTextColor(C_TEXT_MUTED);
         canvas.drawString("RTC:", 580, ribY + 8);
         canvas.setTextColor(C_TEXT_WHITE);
-        canvas.drawString(stamp, 630, ribY + 8);
+        canvas.drawString(stamp + 11, 630, ribY + 8);  // skip "YYYY-MM-DD "
     }
 
     drawBottomNavBar();
@@ -1453,58 +1589,59 @@ void renderSniffer() {
 }
 
 // Sub-Screen: Interactive PID Selector Modal
+// Pages the ACTIVE PROFILE's signals (up to 21 per page, 3x7 grid).
+#define DL_PICKER_PER_PAGE 21
+int g_dlPickerPage = 0;
+
 void renderPidSelector() {
     char titleBuf[48];
-    snprintf(titleBuf, sizeof(titleBuf), "SELECT DATALOG PIDs (%d/%d)", getActivePidCount(), (int)PID_COUNT);
+    int total = getSignalCount();
+    int pages = (total + DL_PICKER_PER_PAGE - 1) / DL_PICKER_PER_PAGE;
+    if (g_dlPickerPage >= pages) g_dlPickerPage = 0;
+    snprintf(titleBuf, sizeof(titleBuf), "SELECT DATALOG SIGNALS pg %d/%d (%d logged)",
+             g_dlPickerPage + 1, pages < 1 ? 1 : pages, getActivePidCount());
     drawHeaderBar(titleBuf);
 
     int startY = 52;
     int rowHeight = 42;
     int colWidth = 250;
 
-    for (size_t i = 0; i < PID_COUNT; i++) {
-        int col = (i % 3);
-        int row = (i / 3);
+    for (int slot = 0; slot < DL_PICKER_PER_PAGE; slot++) {
+        int sigIdx = g_dlPickerPage * DL_PICKER_PER_PAGE + slot;
+        const SignalValue* s = getSignalByIndex(sigIdx);
+        if (!s) break;
+        bool on = dlLogThis(s->key);
+        SignalMeta m{};
+        getSignalMeta(s->key, &m);
+        int col = (slot % 3);
+        int row = (slot / 3);
         int bx = 12 + col * (colWidth + 8);
         int by = startY + row * (rowHeight + 6);
 
-        uint16_t boxBg = availablePids[i].enabled ? canvas.color565(32, 18, 24) : C_CARD_BG;
-        uint16_t boxBorder = availablePids[i].enabled ? C_TRD_RED : C_CARD_BORDER;
-        uint16_t txtColor = availablePids[i].enabled ? C_TEXT_WHITE : C_TEXT_MUTED;
-
-        canvas.fillRoundRect(bx, by, colWidth, rowHeight, 6, boxBg);
-        canvas.drawRoundRect(bx, by, colWidth, rowHeight, 6, boxBorder);
-
+        canvas.fillRoundRect(bx, by, colWidth, rowHeight, 6, on ? canvas.color565(32, 18, 24) : C_CARD_BG);
+        canvas.drawRoundRect(bx, by, colWidth, rowHeight, 6, on ? C_TRD_RED : C_CARD_BORDER);
         canvas.setFont(&fonts::Font2);
-        canvas.setTextColor(availablePids[i].enabled ? C_TRD_RED : C_TEXT_MUTED);
-        canvas.drawString(availablePids[i].enabled ? "[X]" : "[ ]", bx + 10, by + 13);
-
-        canvas.setTextColor(txtColor);
-        canvas.drawString(availablePids[i].label, bx + 46, by + 13);
+        canvas.setTextColor(on ? C_TRD_RED : C_TEXT_MUTED);
+        canvas.drawString(on ? "[X]" : "[ ]", bx + 10, by + 13);
+        canvas.setTextColor(on ? C_TEXT_WHITE : C_TEXT_MUTED);
+        char lbl[32];
+        if (m.unit[0]) snprintf(lbl, sizeof(lbl), "%.18s (%.6s)", s->key, m.unit);
+        else           snprintf(lbl, sizeof(lbl), "%.20s", s->key);
+        canvas.drawString(lbl, bx + 46, by + 13);
     }
 
     int botActionY = 412;
-
-    // [ ALL ] Button
-    canvas.fillRoundRect(12, botActionY, 160, 44, 6, canvas.color565(25, 35, 52));
-    canvas.drawRoundRect(12, botActionY, 160, 44, 6, canvas.color565(60, 110, 180));
+    struct { int x, w; const char* t; } btns[] = {
+        { 12,  100, "<"}, { 124, 100, ">"}, { 236, 140, "ALL"},
+        { 388, 140, "NONE" }, { 540, 248, "DONE" }
+    };
     canvas.setTextColor(C_TEXT_WHITE);
     canvas.setFont(&fonts::Font4);
-    canvas.drawCenterString("ALL", 92, botActionY + 8);
-
-    // [ NONE ] Button
-    canvas.fillRoundRect(184, botActionY, 160, 44, 6, canvas.color565(45, 20, 25));
-    canvas.drawRoundRect(184, botActionY, 160, 44, 6, C_TRD_BURGUNDY);
-    canvas.setTextColor(C_TEXT_WHITE);
-    canvas.setFont(&fonts::Font4);
-    canvas.drawCenterString("NONE", 264, botActionY + 8);
-
-    // [ SAVE & RETURN ] Button
-    canvas.fillRoundRect(356, botActionY, 432, 44, 6, C_TRD_RED);
-    canvas.drawRoundRect(356, botActionY, 432, 44, 6, canvas.color565(255, 100, 100));
-    canvas.setTextColor(C_TEXT_WHITE);
-    canvas.setFont(&fonts::Font4);
-    canvas.drawCenterString("SAVE & RETURN", 572, botActionY + 8);
+    for (auto& b : btns) {
+        canvas.fillRoundRect(b.x, botActionY, b.w, 44, 6, canvas.color565(25, 35, 52));
+        canvas.drawRoundRect(b.x, botActionY, b.w, 44, 6, canvas.color565(60, 110, 180));
+        canvas.drawCenterString(b.t, b.x + b.w / 2, botActionY + 8);
+    }
 }
 
 // Page 2: Dedicated PID Vehicle Datalogger & Parameter Recording Deck
@@ -1555,16 +1692,18 @@ void renderLoggerControl() {
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_WHITE);
-    snprintf(buf, sizeof(buf), "Active Parameters (%d of %d Selected):", getActivePidCount(), (int)PID_COUNT);
+    snprintf(buf, sizeof(buf), "Active Parameters (%d Selected):", getActivePidCount());
     canvas.drawString(buf, 34, 156);
 
-    // Build list of active PID tags (all fit on one 800px-wide line)
+    // Build list of active signal keys (profile-driven; truncated to fit)
     String tagList = "";
     int count = 0;
-    for (size_t i = 0; i < PID_COUNT; i++) {
-        if (availablePids[i].enabled) {
+    for (int i = 0; i < getSignalCount(); i++) {
+        const SignalValue* s = getSignalByIndex(i);
+        if (s && dlLogThis(s->key)) {
+            if (tagList.length() > 560) { tagList += "..."; break; }
             tagList += "[";
-            tagList += availablePids[i].idStr;
+            tagList += s->key;
             tagList += "] ";
             count++;
         }
@@ -1735,68 +1874,220 @@ void renderSystem() {
 }
 
 // Page 5: Settings & Display Configuration
+// =========================================================================
+// Vehicle Profile selection (SD card profiles + NVS persistence)
+// =========================================================================
+
+// Load /profiles/<id>.json from SD into the profile engine and persist the
+// choice in NVS ("prof"). id empty = clear selection, revert to built-in.
+// NVS is written ONLY after the profile validates, so a typo'd or corrupt
+// file can never leave NVS pointing at a selection that won't load.
+static bool applyProfileSelection(const char* id) {
+    if (id && id[0] != 0) {
+        if (!sdMounted) return false;
+        char profPath[64];
+        snprintf(profPath, sizeof(profPath), "/profiles/%s.json", id);
+        if (!SD.exists(profPath)) return false;
+        File pf = SD.open(profPath, FILE_READ);
+        if (!pf) return false;
+        String profJson = pf.readString();
+        pf.close();
+        if (!loadProfile(profJson.c_str())) {
+            Serial.println("[PROFILE] Profile JSON invalid - selection kept, built-in still active.");
+            return false;
+        }
+        Serial.printf("[PROFILE] Profile active: %s (%s)\n", getProfileName(), getProfileId());
+    } else {
+        loadDefaultProfile();
+        Serial.printf("[PROFILE] Reverted to built-in: %s (%s)\n", getProfileName(), getProfileId());
+        id = "";
+    }
+    preferences.begin("dashview", false);
+    preferences.putString("prof", id ? id : "");
+    preferences.end();
+    return true;
+}
+
+// SD profile picker: scan /profiles/*.json once per SD mount into a small table
+static char g_profileIds[6][24];
+static int  g_profileCount = 0;
+static bool g_profileScanMounted = false;
+
+static void scanProfileDir() {
+    g_profileCount = 0;
+    if (!sdMounted) { g_profileScanMounted = false; return; }
+    File dir = SD.open("/profiles");
+    if (!dir) { g_profileScanMounted = true; return; }
+    File entry = dir.openNextFile();
+    while (entry && g_profileCount < 6) {
+        const char* nm = entry.name(); // full path like "/profiles/foo.json"
+        size_t l = strlen(nm);
+        if (!entry.isDirectory() && l > 5 && strcmp(nm + l - 5, ".json") == 0) {
+            const char* base = strrchr(nm, '/');
+            base = base ? base + 1 : nm;
+            size_t idlen = strlen(base) - 5;
+            if (idlen > 0 && idlen < 24) {
+                strncpy(g_profileIds[g_profileCount], base, idlen);
+                g_profileIds[g_profileCount][idlen] = 0;
+                g_profileCount++;
+            }
+        }
+        entry.close();
+        entry = dir.openNextFile();
+    }
+    dir.close();
+    g_profileScanMounted = true;
+}
+
+// Cell hit-test for the profile picker strip (4 cells at y 272-314).
+// Returns: 0..2 = scanned profile index, 3 = BUILT-IN cell, -1 = miss.
+static int profileCellHit(int x, int y) {
+    if (y < 272 || y > 314) return -1;
+    const int xs[4] = {34, 222, 410, 598};
+    for (int i = 0; i < 4; i++)
+        if (x >= xs[i] && x < xs[i] + 176) return i;
+    return -1;
+}
+
 void renderSettings() {
     drawHeaderBar("TOYOTA DASHVIEW - SETTINGS");
 
     char buf[64];
 
     // Card 1: Display Orientation (180-deg Flip)
-    // Box: x=12, y=52, w=776, h=94
-    canvas.fillRoundRect(12, 52, 776, 94, 8, C_CARD_BG);
-    canvas.drawRoundRect(12, 52, 776, 94, 8, C_CARD_BORDER);
-    canvas.fillRect(14, 52, 6, 94, C_TRD_RED);
+    // Box: x=12, y=52, w=776, h=86
+    canvas.fillRoundRect(12, 52, 776, 86, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 52, 776, 86, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 52, 6, 86, C_TRD_RED);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString("Display Orientation (180 deg Flip)", 34, 60);
+    canvas.drawString("Display Orientation (180 deg Flip)", 34, 58);
 
     uint16_t flipBtnBg = isDisplayFlipped ? C_TRD_RED : canvas.color565(25, 35, 50);
     uint16_t flipBtnBorder = isDisplayFlipped ? canvas.color565(255, 100, 100) : canvas.color565(60, 100, 160);
-    canvas.fillRoundRect(34, 94, 732, 40, 6, flipBtnBg);
-    canvas.drawRoundRect(34, 94, 732, 40, 6, flipBtnBorder);
+    canvas.fillRoundRect(34, 88, 732, 40, 6, flipBtnBg);
+    canvas.drawRoundRect(34, 88, 732, 40, 6, flipBtnBorder);
     canvas.setTextColor(C_TEXT_WHITE);
     canvas.setFont(&fonts::Font4);
     snprintf(buf, sizeof(buf), "%s  (TAP TO FLIP)", isDisplayFlipped ? "FLIPPED 180 (INVERTED)" : "STANDARD 0 (NORMAL)");
-    canvas.drawCenterString(buf, 400, 102);
+    canvas.drawCenterString(buf, 400, 96);
 
     // Card 2: Backlight ON/OFF (4.3B backlight is a digital line on the
     // CH422G expander — there is no PWM dimming on this board)
-    // Box: x=12, y=158, w=776, h=94
-    canvas.fillRoundRect(12, 158, 776, 94, 8, C_CARD_BG);
-    canvas.drawRoundRect(12, 158, 776, 94, 8, C_CARD_BORDER);
-    canvas.fillRect(14, 158, 6, 94, C_TRD_ORANGE);
+    // Box: x=12, y=146, w=776, h=86
+    canvas.fillRoundRect(12, 146, 776, 86, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 146, 776, 86, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 146, 6, 86, C_TRD_ORANGE);
 
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_WHITE);
-    canvas.drawString("Backlight (auto-dims after 60s idle)", 34, 166);
+    canvas.drawString("Backlight (auto-dims after 60s idle)", 34, 152);
 
     uint16_t blBtnBg = backlightEnabled ? C_TRD_ORANGE : C_CARD_INNER;
     uint16_t blBtnBorder = backlightEnabled ? canvas.color565(255, 180, 50) : canvas.color565(60, 100, 160);
-    canvas.fillRoundRect(34, 200, 732, 40, 6, blBtnBg);
-    canvas.drawRoundRect(34, 200, 732, 40, 6, blBtnBorder);
+    canvas.fillRoundRect(34, 182, 732, 40, 6, blBtnBg);
+    canvas.drawRoundRect(34, 182, 732, 40, 6, blBtnBorder);
     canvas.setTextColor(backlightEnabled ? TFT_BLACK : C_TEXT_MUTED);
     canvas.setFont(&fonts::Font4);
-    canvas.drawCenterString(backlightEnabled ? "STATE: ON  (TAP TO OFF)" : "STATE: OFF  (TAP TO ON)", 400, 208);
+    canvas.drawCenterString(backlightEnabled ? "STATE: ON  (TAP TO OFF)" : "STATE: OFF  (TAP TO ON)", 400, 190);
 
-    // Card 3: Reboot Controller
-    // Box: x=12, y=264, w=776, h=76
-    canvas.fillRoundRect(12, 264, 776, 76, 8, C_CARD_BG);
-    canvas.drawRoundRect(12, 264, 776, 76, 8, C_CARD_BORDER);
-    canvas.fillRect(14, 264, 6, 76, C_TRD_BURGUNDY);
+    // Card 3: Vehicle Profile picker. Tapping a cell hot-swaps the decode
+    // engine (no reboot) and persists the choice in NVS key "prof".
+    // Box: x=12, y=240, w=776, h=110
+    canvas.fillRoundRect(12, 240, 776, 110, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 240, 776, 110, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 240, 6, 110, canvas.color565(60, 160, 90));
 
-    canvas.fillRoundRect(34, 276, 732, 52, 6, canvas.color565(45, 18, 22));
-    canvas.drawRoundRect(34, 276, 732, 52, 6, C_TRD_BURGUNDY);
-    canvas.setTextColor(canvas.color565(255, 120, 120));
-    canvas.setFont(&fonts::Font4);
-    canvas.drawCenterString("REBOOT CONTROLLER", 400, 288);
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.drawString("Vehicle Profile (SD: /profiles)", 34, 246);
 
-    // Status Footer
-    canvas.fillRoundRect(12, 352, 776, 32, 4, C_CARD_INNER);
+    // Is the built-in profile the active selection? (NVS "prof" empty)
+    preferences.begin("dashview", true);
+    bool builtinActive = preferences.getString("prof", "").length() == 0;
+    preferences.end();
+
+    if (!g_profileScanMounted) {
+        canvas.fillRoundRect(34, 272, 732, 42, 6, C_CARD_INNER);
+        canvas.drawRoundRect(34, 272, 732, 42, 6, canvas.color565(60, 100, 160));
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.setFont(&fonts::Font2);
+        canvas.drawCenterString("No SD card or no /profiles folder - built-in profile active", 400, 286);
+    } else {
+        // 4 cells: up to 3 scanned SD profiles + fixed BUILT-IN
+        const int cellX[4] = {34, 222, 410, 598};
+        canvas.setFont(&fonts::Font2);
+        for (int i = 0; i < 4; i++) {
+            bool active;
+            char label[24];
+            if (i < 3) {
+                if (i >= g_profileCount) {
+                    canvas.fillRoundRect(cellX[i], 272, 176, 42, 6, canvas.color565(18, 22, 30));
+                    canvas.drawRoundRect(cellX[i], 272, 176, 42, 6, canvas.color565(36, 44, 58));
+                    continue;
+                }
+                active = !builtinActive && strcmp(getProfileId(), g_profileIds[i]) == 0;
+                snprintf(label, sizeof(label), "%.18s", g_profileIds[i]);
+            } else {
+                active = builtinActive;
+                snprintf(label, sizeof(label), "BUILT-IN");
+            }
+            canvas.fillRoundRect(cellX[i], 272, 176, 42, 6, active ? C_TRD_RED : C_CARD_INNER);
+            canvas.drawRoundRect(cellX[i], 272, 176, 42, 6, active ? canvas.color565(255, 120, 120) : canvas.color565(60, 100, 160));
+            canvas.setTextColor(active ? C_TEXT_WHITE : C_TEXT_MUTED);
+            canvas.drawCenterString(label, cellX[i] + 88, 286);
+        }
+    }
+
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawCenterString("Settings auto-save to persistent flash storage (NVS)", 400, 358);
+    snprintf(buf, sizeof(buf), "Active: %s [%s]", getProfileName(), getProfileId());
+    canvas.drawString(buf, 34, 322);
+
+    // Card 4: Reboot Controller
+    // Box: x=12, y=358, w=776, h=52
+    canvas.fillRoundRect(12, 358, 776, 52, 8, C_CARD_BG);
+    canvas.drawRoundRect(12, 358, 776, 52, 8, C_CARD_BORDER);
+    canvas.fillRect(14, 358, 6, 52, C_TRD_BURGUNDY);
+
+    canvas.fillRoundRect(34, 362, 732, 44, 6, canvas.color565(45, 18, 22));
+    canvas.drawRoundRect(34, 362, 732, 44, 6, C_TRD_BURGUNDY);
+    canvas.setTextColor(canvas.color565(255, 120, 120));
+    canvas.setFont(&fonts::Font4);
+    canvas.drawCenterString("REBOOT CONTROLLER", 400, 372);
 
     drawBottomNavBar();
+}
+
+// Copy FRESH profile signals (decoded by profile.cpp from broadcasts and OBD
+// responses) into the legacy gauge struct. A signal is trusted only if it was
+// updated within the last 1.5 s, so stale values never overwrite live ones
+// when a profile omits a signal or the bus goes quiet.
+static void syncProfileSignals() {
+    unsigned long now = millis();
+    if (signalAge("rpm", now) < 1500)          vehicleData.rpm = (int)getSignal("rpm");
+    if (signalAge("speed", now) < 1500) {
+        vehicleData.speedMph = (int)getSignal("speed");
+    } else if (signalAge("speed_kmh", now) < 1500) {
+        vehicleData.speedMph = (int)(getSignal("speed_kmh") * 0.621371f);
+    }
+    if (signalAge("throttle", now) < 1500)       vehicleData.throttlePct = (int)getSignal("throttle");
+    if (signalAge("load", now) < 1500)           vehicleData.engineLoadPct = (int)getSignal("load");
+    if (signalAge("coolant", now) < 1500)        vehicleData.coolantTempC = (int)getSignal("coolant");
+    if (signalAge("iat", now) < 1500)            vehicleData.iatC = (int)getSignal("iat");
+    if (signalAge("maf", now) < 1500)            vehicleData.mafGps = getSignal("maf");
+    if (signalAge("timing", now) < 1500)         vehicleData.timingDeg = getSignal("timing");
+    if (signalAge("afr_actual", now) < 1500)     vehicleData.actualAfr = getSignal("afr_actual");
+    if (signalAge("afr_commanded", now) < 1500)  vehicleData.commandedAfr = getSignal("afr_commanded");
+    if (signalAge("kclv", now) < 1500)           vehicleData.kclv = getSignal("kclv");
+    if (signalAge("knockfb", now) < 1500)        vehicleData.knockFB = getSignal("knockfb");
+    if (signalAge("tcc_locked", now) < 1500)     vehicleData.tccLocked = getSignal("tcc_locked") >= 0.5f;
+    const char* g = (signalAge("gear", now) < 1500) ? getSignalText("gear") : nullptr;
+    if (g && g[0]) {
+        strncpy(vehicleData.gear, g, sizeof(vehicleData.gear) - 1);
+        vehicleData.gear[sizeof(vehicleData.gear) - 1] = '\0';
+    }
 }
 
 void updateDisplay() {
@@ -1951,27 +2242,35 @@ void handleTouch() {
                     int rowHeight = 42;
                     int colWidth = 250;
 
-                    for (size_t i = 0; i < PID_COUNT; i++) {
-                        int col = (i % 3);
-                        int row = (i / 3);
+                    for (int slot = 0; slot < DL_PICKER_PER_PAGE; slot++) {
+                        int sigIdx = g_dlPickerPage * DL_PICKER_PER_PAGE + slot;
+                        const SignalValue* s = getSignalByIndex(sigIdx);
+                        if (!s) break;
+                        int col = (slot % 3);
+                        int row = (slot / 3);
                         int bx = 12 + col * (colWidth + 8);
                         int by = startY + row * (rowHeight + 6);
 
                         if (touchLastX >= bx && touchLastX <= bx + colWidth &&
                             touchLastY >= by && touchLastY <= by + rowHeight) {
-                            availablePids[i].enabled = !availablePids[i].enabled;
-                            Serial.printf("[PID PICKER] Toggled %s -> %s\n", availablePids[i].idStr, availablePids[i].enabled ? "ON" : "OFF");
+                            dlSelToggleSig(sigIdx);
+                            Serial.printf("[DL PICKER] Toggled %s\n", s->key);
                             return;
                         }
                     }
 
                     int botY = 412;
                     if (touchLastY >= botY && touchLastY <= botY + 44) {
-                        if (touchLastX >= 12 && touchLastX <= 172) {
-                            for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = true;
-                        } else if (touchLastX >= 184 && touchLastX <= 344) {
-                            for (size_t i = 0; i < PID_COUNT; i++) availablePids[i].enabled = false;
-                        } else if (touchLastX >= 356 && touchLastX <= 788) {
+                        int pages = (getSignalCount() + DL_PICKER_PER_PAGE - 1) / DL_PICKER_PER_PAGE;
+                        if (touchLastX >= 12 && touchLastX <= 112) {
+                            if (g_dlPickerPage > 0) g_dlPickerPage--;
+                        } else if (touchLastX >= 124 && touchLastX <= 224) {
+                            if (g_dlPickerPage + 1 < pages) g_dlPickerPage++;
+                        } else if (touchLastX >= 236 && touchLastX <= 376) {
+                            dlSelAll();
+                        } else if (touchLastX >= 388 && touchLastX <= 528) {
+                            dlSelNone();
+                        } else if (touchLastX >= 540 && touchLastX <= 788) {
                             isPidConfigOpen = false;
                         }
                         return;
@@ -2000,18 +2299,31 @@ void handleTouch() {
             }
             // C. Page 5 (Settings Page)
             else if (currentScreen == SCREEN_SETTINGS) {
-                // Card 1: 180-deg Display Flip (y: 52 - 146)
-                if (touchLastY >= 52 && touchLastY <= 146) {
+                // Card 1: 180-deg Display Flip (y: 52 - 138)
+                if (touchLastY >= 52 && touchLastY <= 138) {
                     saveDisplayFlipSetting(!isDisplayFlipped);
                     return;
                 }
-                // Card 2: Backlight ON/OFF toggle (y: 158 - 252)
-                else if (touchLastY >= 158 && touchLastY <= 252) {
+                // Card 2: Backlight ON/OFF toggle (y: 146 - 232)
+                else if (touchLastY >= 146 && touchLastY <= 232) {
                     saveBacklightSetting(!backlightEnabled);
                     return;
                 }
-                // Card 3: Reboot Controller (y: 264 - 340)
-                else if (touchLastY >= 264 && touchLastY <= 340) {
+                // Card 3: Vehicle Profile cells (y: 272 - 314)
+                else if (touchLastY >= 272 && touchLastY <= 314 && g_profileScanMounted) {
+                    int cell = profileCellHit(touchLastX, touchLastY);
+                    if (cell >= 0) {
+                        if (cell == 3) {
+                            applyProfileSelection("");
+                        } else if (cell < g_profileCount) {
+                            if (!applyProfileSelection(g_profileIds[cell]))
+                                Serial.printf("[PROFILE] Select '%s' failed - keeping current profile.\n", g_profileIds[cell]);
+                        }
+                    }
+                    return;
+                }
+                // Card 4: Reboot Controller (y: 358 - 410)
+                else if (touchLastY >= 358 && touchLastY <= 410) {
                     Serial.println("[SETTINGS] Reboot requested -> Restarting ESP32...");
                     delay(200);
                     ESP.restart();
@@ -2031,6 +2343,8 @@ void processCAN() {
     uint32_t alerts = 0;
     if (twai_read_alerts(&alerts, 0) == ESP_OK && alerts) {
         if (alerts & TWAI_ALERT_BUS_OFF) tryCanRecovery();
+        if (alerts & TWAI_ALERT_ERR_PASS)
+            noteTxError("error-passive");
         if (alerts & TWAI_ALERT_RX_QUEUE_FULL) {
             rxOverflowCount++;
             Serial.println("[CAN] RX queue full - frames dropped!");
@@ -2075,37 +2389,25 @@ void processDatalogging() {
         logEntryCount++;
 
         String row = String(millis());
-        for (size_t i = 0; i < PID_COUNT; i++) {
-            if (!availablePids[i].enabled) continue;
-            row += ",";
-            if (strcmp(availablePids[i].idStr, "RPM") == 0) {
-                row += String(vehicleData.rpm);
-            } else if (strcmp(availablePids[i].idStr, "SPEED") == 0) {
-                row += String(vehicleData.speedMph);
-            } else if (strcmp(availablePids[i].idStr, "THR") == 0) {
-                row += String(vehicleData.throttlePct);
-            } else if (strcmp(availablePids[i].idStr, "LOAD") == 0) {
-                row += String(vehicleData.engineLoadPct);
-            } else if (strcmp(availablePids[i].idStr, "AFR") == 0) {
-                row += String(vehicleData.commandedAfr, 2);
-                row += ",";
-                row += String(vehicleData.actualAfr, 2);
-            } else if (strcmp(availablePids[i].idStr, "KCLV") == 0) {
-                row += String(vehicleData.kclv, 1);
-            } else if (strcmp(availablePids[i].idStr, "KFB") == 0) {
-                row += String(vehicleData.knockFB, 1);
-            } else if (strcmp(availablePids[i].idStr, "ECT") == 0) {
-                row += String(vehicleData.coolantTempC);
-            } else if (strcmp(availablePids[i].idStr, "GEAR") == 0) {
-                row += String(vehicleData.gear);
-                row += ",";
-                row += vehicleData.tccLocked ? "1" : "0";
-            } else if (strcmp(availablePids[i].idStr, "IAT") == 0) {
-                row += String(vehicleData.iatC);
-            } else if (strcmp(availablePids[i].idStr, "MAF") == 0) {
-                row += String(vehicleData.mafGps, 2);
-            } else if (strcmp(availablePids[i].idStr, "TIMING") == 0) {
-                row += String(vehicleData.timingDeg, 1);
+        unsigned long now = millis();
+        for (int i = 0; i < getSignalCount(); i++) {
+            const SignalValue* s = getSignalByIndex(i);
+            if (!s || !dlLogThis(s->key)) continue;
+            row += ',';
+            // 5 s gate: the OBD poller rotates ~4 queries/s, so a polled
+            // signal legitimately refreshes only every few seconds. Blanking
+            // at 1.5 s (display freshness) would leave the CSV mostly empty;
+            // 5 s still catches key-off / silent bus.
+            if (s->valid && signalAge(s->key, now) < 5000) {
+                if (s->hasText) {
+                    row += s->text;                         // enum text (gear...)
+                } else {
+                    SignalMeta m{};
+                    getSignalMeta(s->key, &m);
+                    char vbuf[16];
+                    snprintf(vbuf, sizeof(vbuf), "%.*f", m.decimals, s->value);
+                    row += vbuf;
+                }
             }
         }
 
@@ -2125,6 +2427,8 @@ void setup() {
 
     // 0. Load persistent settings (180-deg flip & backlight)
     loadSettings();
+    loadDefaultProfile();
+    Serial.printf("[PROFILE] Vehicle Profile Loaded: %s (%s)\n", getProfileName(), getProfileId());
 
     // 1. Shared I2C bus: GT911 touch + CH422G expander + PCF85063 RTC
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, 400000);
@@ -2164,6 +2468,35 @@ void setup() {
     // 7. CAN Bus & MicroSD
     initCAN();
     mountSD();
+
+    // 7b. Vehicle profile override: /profiles/<id>.json on SD, id chosen in
+    // NVS key "prof". The built-in default loaded in step 0 stays in effect
+    // when no card / no selection / invalid JSON.
+    scanProfileDir();
+    if (sdMounted) {
+        preferences.begin("dashview", true);
+        String profId = preferences.getString("prof", "");
+        preferences.end();
+        if (profId.length() > 0) {
+            char profPath[64];
+            snprintf(profPath, sizeof(profPath), "/profiles/%s.json", profId.c_str());
+            bool sdProfileLoaded = false;
+            if (SD.exists(profPath)) {
+                File pf = SD.open(profPath, FILE_READ);
+                if (pf) {
+                    String profJson = pf.readString();
+                    pf.close();
+                    sdProfileLoaded = loadProfile(profJson.c_str());
+                    if (!sdProfileLoaded)
+                        Serial.println("[PROFILE] SD profile JSON invalid - keeping built-in default.");
+                }
+            } else {
+                Serial.printf("[PROFILE] NVS profile '%s' not found on SD (%s) - using built-in default.\n", profId.c_str(), profPath);
+            }
+            if (sdProfileLoaded)
+                Serial.printf("[PROFILE] SD profile loaded: %s (%s)\n", getProfileName(), getProfileId());
+        }
+    }
 
     // 8. Custom Dash: load saved gauge layout
     cdLoadPrefs();
@@ -2215,7 +2548,8 @@ void loop() {
     }
 
     // Periodic Toyota OBD-II active queries
-    if (millis() - lastCanActivityTime < 3000 && (millis() - lastObdQueryTime >= 250)) {
+    // TX failsafe: obdTxCleared() pauses polling on any bus error activity.
+    if (millis() - lastCanActivityTime < 3000 && (millis() - lastObdQueryTime >= 250) && obdTxCleared()) {
         lastObdQueryTime = millis();
         sendToyotaObdQueries();
     }
@@ -2223,7 +2557,7 @@ void loop() {
     // MicroSD retry
     if (!sdMounted && (millis() - lastSdRetryTime >= 5000)) {
         lastSdRetryTime = millis();
-        mountSD();
+        if (mountSD()) scanProfileDir();
     }
 
     // Update Message Rate calculation
@@ -2236,6 +2570,7 @@ void loop() {
     // 30 FPS Display Refresh
     if (millis() - lastDisplayUpdate >= 33) {
         lastDisplayUpdate = millis();
+        syncProfileSignals();
         updateDisplay();
     }
 }

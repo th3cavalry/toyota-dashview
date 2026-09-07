@@ -52,6 +52,7 @@ struct CdGauge {
     uint8_t  warnColor;        // CdColor
     uint8_t  decimals;         // 0..2
     bool     valid;            // slot in use
+    char     sigKey[24];       // profile signal key; empty = legacy availablePids[pid]
 };
 
 // ---- Module state (defined once, in custom_dash.cpp) ----------------------
