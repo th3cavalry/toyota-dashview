@@ -299,7 +299,6 @@ void LVGLCanvas::glyph(const lv_font_t *f, uint32_t cp, int32_t &x, int32_t y) {
     const void *raw = lv_font_get_glyph_bitmap(&dsc, &glyph_scratch);
     if (!raw) { x += dsc.adv_w ?: 4; return; }
 
-    const uint8_t *bits = (const uint8_t *)raw;
     int32_t bw  = dsc.box_w;
     int32_t bh  = dsc.box_h;
     int32_t ox_ = dsc.ofs_x;
