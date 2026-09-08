@@ -69,7 +69,6 @@ private:
 };
 
 extern LVGLCanvas canvas;
-extern LVGLCanvas tft;
 
 void displayBacklightOn();
 void displayBacklightOff();

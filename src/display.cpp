@@ -23,7 +23,6 @@
 void ch422gSetPin(uint8_t bit, bool level);
 
 LVGLCanvas canvas;   // drawing alias — same name the UI code already uses
-LVGLCanvas tft;      // init + rotation (the old LGFX_Device pair it replaces)
 
 static esp_lcd_panel_handle_t g_panel = nullptr;
 static bool g_backlightOn = true;
