@@ -25,7 +25,7 @@ renderer invalidates **dirty rects**, not the whole 800×480 frame.
 
 | Area | Current source | Target |
 |---|---|---|
-| Panel + RGB bus init | LGFX classes inline, `main.cpp:36–117` (16×RGB565 D0–15, DE=5 VS=3 HS=46 PCLK=7, pclk 14 MHz) | `esp_lcd_panel_rgb` + `esp_lcd_panel_io_spi` (ST7701 init via 3-wire SPI) |
+| Panel + RGB bus init | LGFX classes inline, `main.cpp:36–117` (16×RGB565 D0–15, DE=5 VS=3 HS=46 PCLK=7, pclk 14 MHz) | `esp_lcd_panel_rgb` only — verified: LGFX `pin_cs` defaults −1 and main.cpp never sets it → ST7701 SPI init never runs, board is pure RGB scanout |
 | Touch GT911 @0x5D INT GPIO4 | `pollTouch()` raw I2C | LVGL indev; keep 11a218d's track-register fix (old UI navbar hit-boxes die with the custom UI) |
 | Backlight CH422G EXIO2 | `dimScreen/wakeScreen` `main.cpp:866/875` | keep CH422G driver; LVGL `lv_display_set_brightness` |
 | Boot splash (TRD logo) | `toyota_splash.h` (1021-line bitmap arr) | `lv_image` + `LV_IMG_CF_TRUE_COLOR` |

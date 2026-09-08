@@ -259,7 +259,7 @@ static void cdDrawGauge(const CdGauge& g) {
     }
     uint16_t valColor = warn ? (flashOn ? TFT_BLACK : C_TEXT_WHITE) : C_TEXT_WHITE;
 
-    canvas.setFont(&fonts::Font2);
+    canvas.setFont(fonts::Font2);
     canvas.setTextColor(warn && flashOn ? TFT_BLACK : C_TEXT_MUTED, bg);
     canvas.drawString(label, x + 8, y + 6);
 
@@ -277,7 +277,7 @@ static void cdDrawGauge(const CdGauge& g) {
     }
 
     int valSize = (h > 70) ? 2 : ((h > 46) ? 1 : 0);
-    canvas.setFont(valSize == 2 ? &fonts::Font4 : &fonts::Font2);
+    canvas.setFont(valSize == 2 ? fonts::Font4 : fonts::Font2);
     canvas.setTextColor(valColor, bg);
 
     if (g.style == CD_STYLE_NUMBER || (g.style != CD_STYLE_NUMBER && h < 44)) {
@@ -313,7 +313,7 @@ static void cdDrawGauge(const CdGauge& g) {
 static void cdDrawCustomizePill() {
     canvas.fillRoundRect(CD_BTN_CUST_X, CD_BTN_CUST_Y, CD_BTN_CUST_W, CD_BTN_CUST_H, 4, canvas.color565(25, 35, 52));
     canvas.drawRoundRect(CD_BTN_CUST_X, CD_BTN_CUST_Y, CD_BTN_CUST_W, CD_BTN_CUST_H, 4, canvas.color565(60, 100, 160));
-    canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(fonts::Font2);
     canvas.drawCenterString("CUSTOMIZE", CD_BTN_CUST_X + CD_BTN_CUST_W / 2, CD_BTN_CUST_Y + 4);
 }
 
@@ -323,7 +323,7 @@ void renderCustomDash() {
 
     if (!g_cdEditMode) {
         if (g_cdGaugeCount == 0) {
-            canvas.setFont(&fonts::Font4); canvas.setTextColor(C_TEXT_MUTED);
+            canvas.setFont(fonts::Font4); canvas.setTextColor(C_TEXT_MUTED);
             canvas.drawCenterString("No gauges yet.", 400, 220);
             canvas.drawCenterString("Tap CUSTOMIZE to add one.", 400, 250);
         }
@@ -351,7 +351,7 @@ void renderCustomDash() {
     int by = 412;
     canvas.fillRoundRect(12, by, 200, 44, 6, canvas.color565(15, 38, 22));
     canvas.drawRoundRect(12, by, 200, 44, 6, C_GREEN_OK);
-    canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font4);
+    canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(fonts::Font4);
     canvas.drawCenterString("+ ADD GAUGE", 112, by + 8);
     canvas.fillRoundRect(224, by, 200, 44, 6, canvas.color565(45, 20, 25));
     canvas.drawRoundRect(224, by, 200, 44, 6, C_TRD_BURGUNDY);
@@ -399,7 +399,7 @@ void renderCustomDashEditor() {
 
     if (g_cdEditorKind == CD_EDIT_ADD) {
         char pbuf[48];
-        canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+        canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
         snprintf(pbuf, sizeof(pbuf), "Choose a parameter (page %d/%d):", g_cdPickerPage + 1,
                  (cdPickerTotal() + CD_PICKER_PER_PAGE - 1) / CD_PICKER_PER_PAGE);
         canvas.drawString(pbuf, 34, E_TOP + 12);
@@ -412,12 +412,12 @@ void renderCustomDashEditor() {
             int bx = sx + col * (colW + 8), by = sy + row * (rowH + 6);
             canvas.fillRoundRect(bx, by, colW, rowH, 6, kind == 1 ? canvas.color565(20, 32, 26) : C_CARD_BG);
             canvas.drawRoundRect(bx, by, colW, rowH, 6, kind == 1 ? canvas.color565(60, 160, 90) : C_CARD_BORDER);
-            canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font2);
+            canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(fonts::Font2);
             canvas.drawString(lbl, bx + 10, by + 15);
         }
         // Page nav + Cancel (bottom)
         canvas.fillRoundRect(12, 412, 200, 44, 6, canvas.color565(25, 35, 52));
-        canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(fonts::Font4);
         canvas.drawCenterString("PREV", 112, 420);
         canvas.fillRoundRect(224, 412, 200, 44, 6, canvas.color565(25, 35, 52));
         canvas.drawCenterString("NEXT", 324, 420);
@@ -431,14 +431,14 @@ void renderCustomDashEditor() {
     }
     CdGauge& g = g_cdGauges[g_cdEditorIdx];
     char buf[48];
-    canvas.setFont(&fonts::Font4); canvas.setTextColor(C_TEXT_WHITE);
+    canvas.setFont(fonts::Font4); canvas.setTextColor(C_TEXT_WHITE);
     if (cdIsSig(g)) snprintf(buf, sizeof(buf), "%s", g.sigKey);
     else            snprintf(buf, sizeof(buf), "%s", availablePids[g.pid].label);
     canvas.drawString(buf, 34, E_TOP + 12);
     // DELETE button (top-right)
     canvas.fillRoundRect(656, E_TOP + 6, 132, 34, 6, canvas.color565(45, 18, 22));
     canvas.drawRoundRect(656, E_TOP + 6, 132, 34, 6, C_TRD_RED);
-    canvas.setTextColor(canvas.color565(255,120,120)); canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(canvas.color565(255,120,120)); canvas.setFont(fonts::Font2);
     canvas.drawCenterString("DELETE", 722, E_TOP + 15);
 
     const char* styles[3] = {"NUMBER", "HBAR", "VBAR"};
@@ -446,19 +446,19 @@ void renderCustomDashEditor() {
     CdColor cols[6] = {CD_COL_CYAN, CD_COL_GREEN, CD_COL_ORANGE, CD_COL_RED, CD_COL_WHITE, CD_COL_GOLD};
 
     // Row 0: style
-    canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
     canvas.drawString("STYLE", 34, e_rowY(0) + 12);
     for (int i = 0; i < 3; i++) {
         int bx = 160 + i * 150;
         bool on = g.style == i;
         canvas.fillRoundRect(bx, e_rowY(0), 140, 40, 6, on ? C_TRD_RED : C_CARD_BG);
         canvas.drawRoundRect(bx, e_rowY(0), 140, 40, 6, on ? C_TEXT_WHITE : C_CARD_BORDER);
-        canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(fonts::Font2);
         canvas.drawCenterString(styles[i], bx + 70, e_rowY(0) + 12);
     }
 
     // Row 1: MIN / MAX steppers
-    canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
     canvas.drawString("SCALE", 34, e_rowY(1) + 12);
     snprintf(buf, sizeof(buf), "MIN %.0f", g.minVal);
     canvas.fillRoundRect(160, e_rowY(1), 150, 40, 6, C_CARD_INNER); canvas.drawRoundRect(160, e_rowY(1), 150, 40, 6, C_CARD_BORDER);
@@ -472,7 +472,7 @@ void renderCustomDashEditor() {
     canvas.setTextColor(C_TEXT_MUTED); canvas.drawString("+", 466, e_rowY(1) + 12);
 
     // Row 2: WARN HIGH value + OFF
-    canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
     canvas.drawString("WARN>", 34, e_rowY(2) + 12);
     snprintf(buf, sizeof(buf), "%.0f", g.warnHi <= -1e29f ? 0 : g.warnHi);
     canvas.fillRoundRect(160, e_rowY(2), 320, 40, 6, g.warnHi <= -1e29f ? C_CARD_INNER : canvas.color565(45, 20, 25));
@@ -482,24 +482,25 @@ void renderCustomDashEditor() {
     canvas.setTextColor(C_TEXT_MUTED); canvas.drawString("+", 466, e_rowY(2) + 12);
 
     // Row 3: warn mode + color swatches
-    canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
     canvas.drawString("CUE", 34, e_rowY(3) + 12);
     for (int i = 0; i < 3; i++) {
         int bx = 160 + i * 90;
         bool on = g.warnMode == i;
         canvas.fillRoundRect(bx, e_rowY(3), 82, 40, 6, on ? C_TRD_ORANGE : C_CARD_BG);
         canvas.drawRoundRect(bx, e_rowY(3), 82, 40, 6, on ? C_TEXT_WHITE : C_CARD_BORDER);
-        canvas.setTextColor(on ? TFT_BLACK : C_TEXT_MUTED); canvas.setFont(&fonts::Font0);
+        canvas.setTextColor(on ? TFT_BLACK : C_TEXT_MUTED); canvas.setFont(fonts::Font0);
         canvas.drawCenterString(warnModes[i], bx + 41, e_rowY(3) + 15);
     }
     for (int i = 0; i < 6; i++) {
         int bx = 450 + i * 46;
         canvas.fillCircle(bx + 16, e_rowY(3) + 20, 16, cdColor(cols[i]));
         if (g.warnColor == i) canvas.drawCircle(bx + 16, e_rowY(3) + 20, 20, C_TEXT_WHITE);
+        else                       canvas.drawCircle(bx + 16, e_rowY(3) + 20, 20, TFT_BLACK);
     }
 
     // Row 4: decimals
-    canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
     canvas.drawString("DEC", 34, e_rowY(4) + 12);
     for (int i = 0; i < 3; i++) {
         int bx = 160 + i * 70;
@@ -507,13 +508,13 @@ void renderCustomDashEditor() {
         snprintf(buf, sizeof(buf), "%d", i);
         canvas.fillRoundRect(bx, e_rowY(4), 62, 40, 6, on ? C_TEXT_CYAN : C_CARD_BG);
         canvas.drawRoundRect(bx, e_rowY(4), 62, 40, 6, on ? C_TEXT_WHITE : C_CARD_BORDER);
-        canvas.setTextColor(on ? TFT_BLACK : C_TEXT_MUTED); canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(on ? TFT_BLACK : C_TEXT_MUTED); canvas.setFont(fonts::Font2);
         canvas.drawCenterString(buf, bx + 31, e_rowY(4) + 12);
     }
 
     // bottom: DONE
     canvas.fillRoundRect(436, 412, 352, 44, 6, C_TRD_ORANGE);
-    canvas.setTextColor(TFT_BLACK); canvas.setFont(&fonts::Font4);
+    canvas.setTextColor(TFT_BLACK); canvas.setFont(fonts::Font4);
     canvas.drawCenterString("DONE", 612, 420);
 }
 
