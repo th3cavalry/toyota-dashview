@@ -6,12 +6,11 @@
 #include <Preferences.h>
 #include "driver/twai.h"
 #include "version.h"
-#include "toyota_splash.h"
 #include "profile.h"
 #include "custom_dash.h"   // Custom Dash API (impl included later, post-palette)
 #include "display.h"       // LVGL 9 render core (replaces LovyanGFX)
 #include "fonts.h"         // fonts::Font0/2/4/7 -> LVGL Montserrat
-#include "splash.h"        // TRD boot splash PNG decode
+#include "splash.h"        // DashView boot splash (canvas-drawn, no PNG decode)
 
 // Persistent Settings (Flash NVS)
 Preferences preferences;
@@ -23,7 +22,6 @@ void backlightOn();
 void ch422gSetPin(uint8_t bit, bool level);
 bool rtcStamp(char* out, size_t len);
 void backlightOff();
-void pushCanvasToPanel();
 
 // =========================================================================
 // LVGL 9 Display — single PSRAM framebuffer, scanned through SRAM bounce buffers
@@ -2040,7 +2038,7 @@ void updateDisplay() {
 // =========================================================================
 void showToyotaBootSplash() {
     if (!drawToyotaBootSplash(canvas)) {
-        Serial.println("[SPLASH] PNG decode failed — clearing to black.");
+        Serial.println("[SPLASH] Splash render failed — clearing to black.");
         canvas.fillScreen(0);
     }
     isBootSplashActive = true;
@@ -2390,9 +2388,9 @@ void setup() {
     displayTouchInit();                  // GT911 -> LVGL indev (11a218d fix kept)
     initRtc();
 
-    // 5. OEM Toyota Boot Splash Screen
+    // 5. Boot splash: "DashView" wordmark, canvas-drawn (no PNG decode)
     if (!drawToyotaBootSplash(canvas)) {
-        Serial.println("[SPLASH] PNG decode failed — clearing to black.");
+        Serial.println("[SPLASH] Splash render failed — clearing to black.");
         canvas.fillScreen(0);
     }
 

@@ -43,10 +43,8 @@ public:
     void drawRightString(const String& s, int32_t x, int32_t y);
     void drawRightString(const String& s, int32_t x, int32_t y, uint16_t c);
     void setRotation(uint8_t r);
-    bool drawPng(const uint8_t* png, uint32_t len, int32_t x, int32_t y);
 
     lv_display_t* display() const { return _disp; }
-    uint16_t*     fb() const { return (uint16_t*)_fb; }
 
 private:
     void px(int x, int y, uint16_t c);
@@ -56,7 +54,6 @@ private:
     int32_t  textW(const String& s) const;
     int32_t  textH() const;
     void     invalidateRect(int32_t x, int32_t y, int32_t w, int32_t h);
-    uint8_t* _fb = nullptr;
     lv_display_t* _disp = nullptr;
     const lv_font_t* _font = nullptr;
     uint16_t _fg = 0xFFFF;
@@ -73,6 +70,5 @@ extern LVGLCanvas canvas;
 void displayBacklightOn();
 void displayBacklightOff();
 bool displayBacklightEnabled();
-void displayFlushNow();
 void displayTouchInit();
 bool displayTouchRead(int& x, int& y);

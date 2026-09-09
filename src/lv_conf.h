@@ -22,8 +22,14 @@
 #define LV_FONT_MONTSERRAT_20  1
 #define LV_FONT_MONTSERRAT_28  1
 
-#define LV_USE_LODEPNG          1
-#define LV_USE_PNG              1
+#define LV_USE_LODEPNG          0   // no image decoders left: splash is canvas-drawn
+
+// The canvas shim writes the PSRAM FB through the DCache; the RGB driver's
+// bounce-buffer ISR copies FB->bounce with the cache DISABLED. Keep both aligns
+// at cache-line size so the driver's esp_cache_msync() write-back is always
+// aligned — unaligned slices take a slow, racy fallback path.
+#define LV_DRAW_BUF_STRIDE_ALIGN   32   // internal-SRAM cache line size
+#define LV_DRAW_BUF_ALIGN          32   // bounce bufs are 32B-aligned internal SRAM
 
 #define LV_USE_GPU              0
 #define LV_USE_OS                LV_OS_NONE
