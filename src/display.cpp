@@ -314,26 +314,34 @@ int32_t LVGLCanvas::textH() const {
 }
 
 void LVGLCanvas::glyph(const lv_font_t *f, uint32_t cp, int32_t &x, int32_t y) {
-    if (cp == ' ') { x += 4; return; }
+    if (cp == ' ') { x += 6; return; }
 
     ensure_glyph_scratch();
 
     lv_font_glyph_dsc_t dsc = {};
-    if (!lv_font_get_glyph_dsc(f, &dsc, cp, 0)) { x += dsc.adv_w ?: 4; return; }
+    if (!lv_font_get_glyph_dsc(f, &dsc, cp, 0)) { x += dsc.adv_w ?: 6; return; }
 
     const void *raw = lv_font_get_glyph_bitmap(&dsc, &glyph_scratch);
-    if (!raw) { x += dsc.adv_w ?: 4; return; }
+    if (!raw) { x += dsc.adv_w ?: 6; return; }
 
     int32_t bw  = dsc.box_w;
     int32_t bh  = dsc.box_h;
     int32_t ox_ = dsc.ofs_x;
     int32_t oy_ = dsc.ofs_y;
-    int32_t base_y = y;
 
-    if (dsc.format == LV_FONT_GLYPH_FORMAT_A8 && bw > 0 && bh > 0) {
-        for (int yy = 0; yy < bh; yy++)
-            for (int xx = 0; xx < bw; xx++)
-                px(ox_ + xx, base_y + oy_ + yy, _fg);
+    const lv_draw_buf_t *draw_buf = (const lv_draw_buf_t *)raw;
+    const uint8_t *bitmap = (const uint8_t *)draw_buf->data;
+    uint32_t stride = draw_buf->header.stride ? draw_buf->header.stride : (uint32_t)bw;
+
+    if (bw > 0 && bh > 0 && bitmap) {
+        for (int yy = 0; yy < bh; yy++) {
+            for (int xx = 0; xx < bw; xx++) {
+                uint8_t alpha = bitmap[yy * stride + xx];
+                if (alpha > 32) {
+                    px(x + ox_ + xx, y + (lv_font_get_line_height(f) - bh - oy_) + yy, _fg);
+                }
+            }
+        }
     }
     x += dsc.adv_w;
 }

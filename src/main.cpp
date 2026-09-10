@@ -2421,6 +2421,17 @@ void loop() {
             return;
         }
 
+        // 3. Auto-dismiss splash after 3 seconds timeout
+        if (millis() > 3000) {
+            currentScreen = SCREEN_DASHBOARD;
+            isBootSplashActive = false;
+            wasTouched = false;
+            wakeScreen();
+            lastUserActivityTime = millis();
+            Serial.println("[SPLASH] Splash timed out (3s) -> Auto-entering Main Dashboard.");
+            return;
+        }
+
         return;
     }
 
