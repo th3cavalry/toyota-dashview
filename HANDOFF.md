@@ -3,18 +3,17 @@
 Write this file's sibling knowledge lives in `AGENTS.md` (project state) and
 `BENCH.md` (bring-up checklist). This file = bridge from the container session.
 
-Last updated: 2026-09-05, head `ad2d391` (branch `feat/4.3b-migration`, PR #4 open & green).
+Last updated: 2026-09-09, branch `feat/lvgl-port` (commit `d7f1b10`).
 
-## What changed since you (previous session) started
+## Display Architecture & Hardware Status (2026-09-09 Update)
 
-- PR #4 (profile engine → decode, gauges, datalogger all data-driven) is open,
-  Copilot-reviewed, all threads resolved, CI build success, mergeable.
-  Repo: https://github.com/th3cavalry/toyota-dashview
-- Native test suite exists: `bash tests/native/run.sh` → expect 46/46.
-- The ESP32-S3 board arrived. It was tested reachable from the Hermes
-  container (USB/IP): enumerated as `303A:1001` "USB JTAG/serial debug unit",
-  `cdc_acm` bound, but the container device-cgroup blocked opening the port.
-  **This session runs bare-metal to sidestep that.**
+- **Display Panel & Backlight Fixed**: The RGB LCD (800x480) on the Waveshare 4.3B is now driven via `esp_lcd_new_rgb_panel` with a direct PSRAM frame buffer (768 KB) using `num_fbs = 1`, `flags.fb_in_psram = 1`, and `bounce_buffer_size_px = 0`.
+- **Cache Panic Eliminated**: Because `bounce_buffer_size_px` is 0, GDMA streams directly from Octal PSRAM using hardware bus-master DMA with NO CPU interrupt. SPI flash operations (Wi-Fi, NVS, SD) disabling the CPU DCache no longer trigger `Guru Meditation Error: Core 1 panic (Cache disabled but cached memory region accessed)`.
+- **DO NOT reintroduce bounce buffers or `no_fb` mode**: `no_fb` mode breaks `get_frame_buffer()`, and bounce buffers re-introduce the cache-disabled ISR panic.
+- **Boot Splash & Auto-Dismiss**: Boot splash renders "DashView" wordmark and auto-dismisses after 3 seconds into the Main Dashboard (Page 0), or immediately upon screen tap.
+- **Touch**: GT911 at `0x5D` on shared I2C bus is wired to `displayTouchRead()` and `pollTouch()`.
+- **Build & Flash**: Working cleanly via PlatformIO in the container environment.
+
 
 ## Device facts (verified 2026-09-05)
 
