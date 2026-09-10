@@ -3,19 +3,24 @@
 Write this file's sibling knowledge lives in `AGENTS.md` (project state) and
 `BENCH.md` (bring-up checklist). This file = bridge from the container session.
 
-Last updated: 2026-09-09, branch `feat/lvgl-port` (commit `d7f1b10`).
+Last updated: 2026-09-10, branch `feat/lvgl-port` (commit `82cd8a4`).
 
-## Display Architecture & Hardware Status (2026-09-09 Update)
+## Display Architecture & Hardware Status (2026-09-10 Update)
 
-- **Display Panel & Backlight Fixed**: The RGB LCD (800x480) on the Waveshare 4.3B is now driven via `esp_lcd_new_rgb_panel` with a direct PSRAM frame buffer (768 KB) using `num_fbs = 1`, `flags.fb_in_psram = 1`, and `bounce_buffer_size_px = 0`.
-- **Cache Panic Eliminated**: Because `bounce_buffer_size_px` is 0, GDMA streams directly from Octal PSRAM using hardware bus-master DMA with NO CPU interrupt. SPI flash operations (Wi-Fi, NVS, SD) disabling the CPU DCache no longer trigger `Guru Meditation Error: Core 1 panic (Cache disabled but cached memory region accessed)`.
+- **Display Panel & Direct Scanout**: The RGB LCD (800x480, ST7262) on the Waveshare 4.3B is driven via `esp_lcd_new_rgb_panel` with a direct PSRAM frame buffer (768 KB) using `num_fbs = 1`, `flags.fb_in_psram = 1`, `dma_burst_size = 64`, and `bounce_buffer_size_px = 0`.
+- **Pixel Clock Locked at 14 MHz**: `pclk_hz = 14000000`. **CRITICAL RULE**: Do NOT increase `pclk_hz` to 16 MHz. Under active Wi-Fi AP and CAN traffic, 16 MHz pulls pixels faster than GDMA can refill the internal FIFO over the Octal PSRAM bus, starving the scanout beam and shearing lines horizontally ("screen shaking side-to-side"). 14 MHz with standard ST7262 porches is rock solid.
+- **Cache Panic Eliminated**: Because `bounce_buffer_size_px` is 0, GDMA streams directly from Octal PSRAM using hardware bus-master DMA with NO CPU interrupt. SPI flash operations (Wi-Fi, NVS, SD) disabling the CPU DCache no longer trigger cache disabled ISR panics.
 - **DO NOT reintroduce bounce buffers or `no_fb` mode**: `no_fb` mode breaks `get_frame_buffer()`, and bounce buffers re-introduce the cache-disabled ISR panic.
-- **Boot Splash & Auto-Dismiss**: Boot splash renders "DashView" wordmark and auto-dismisses after 3 seconds into the Main Dashboard (Page 0), or immediately upon screen tap.
-- **Display Flicker Root Causes & Fixes**:
-  1. *Unbuffered Full-Screen Wipe*: `updateDisplay()` was calling `canvas.fillScreen(C_DARK_BG)` every 16ms (60 FPS) on the active scanout buffer. Wiping and redrawing unbuffered into the active buffer causes severe tearing and strobing. Redraw only dirty gauge rects/labels in place, or switch to double-buffering (`num_fbs = 2`).
-  2. *Low Refresh Rate (~33 Hz)*: 14 MHz `pclk_hz` with total clock count 423,120 yields only 33 Hz. Increasing `pclk_hz` (e.g., 16 MHz) with tuned porches (pulse=10, back=10, front=10) brings refresh rate to 50-60 Hz without bus starvation.
-- **Touch**: GT911 at `0x5D` on shared I2C bus is wired to `displayTouchRead()` and `pollTouch()`.
-- **Build & Flash**: Working cleanly via PlatformIO in the container environment.
+- **Flicker-Free Dirty-Rect Rendering**: In single-buffer direct PSRAM scanout, the beam scans the buffer continuously at ~33 Hz. Wiping the screen or header bar causes severe flicker/strobing. Full screen clears (`canvas.fillScreen(C_DARK_BG)`) and full header redraws now happen ONLY on screen transitions (`screenChanged = true`). During steady-state frames:
+  - `renderDashboard()` caches all 6 cards; static cards are untouched.
+  - `renderCustomDash()` uses per-gauge dirty caching.
+  - `renderSniffer()`, `renderLoggerControl()`, `renderWiFi()`, `renderSystem()` only update dynamic text regions in place.
+  - `renderSettings()` exits immediately if not `forceFull`.
+- **Touch Navigation Fixed**:
+  - `SWIPE_MIN_DIST_PX` reduced from 400px (50% screen width) to 120px for natural gestures.
+  - Bottom navigation bar now has direct hit tests for `< PREV` (x <= 220), `NEXT >` (x >= 580), and page dots (x = 328..472, y >= 436). Tapping `< PREV` or `NEXT >` or dots works instantly across all screens.
+- **Boot Splash & Auto-Dismiss**: Boot splash renders Toyota wordmark and auto-dismisses after 3 seconds into the Main Dashboard (Page 0), or immediately upon screen tap.
+- **Build & Flash**: Verified building cleanly with PlatformIO and flashing to physical hardware via `/dev/ttyACM0`. Live serial boots cleanly with all peripherals active.
 
 
 ## Device facts (verified 2026-09-05)
