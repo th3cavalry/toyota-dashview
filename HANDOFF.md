@@ -11,6 +11,9 @@ Last updated: 2026-09-09, branch `feat/lvgl-port` (commit `d7f1b10`).
 - **Cache Panic Eliminated**: Because `bounce_buffer_size_px` is 0, GDMA streams directly from Octal PSRAM using hardware bus-master DMA with NO CPU interrupt. SPI flash operations (Wi-Fi, NVS, SD) disabling the CPU DCache no longer trigger `Guru Meditation Error: Core 1 panic (Cache disabled but cached memory region accessed)`.
 - **DO NOT reintroduce bounce buffers or `no_fb` mode**: `no_fb` mode breaks `get_frame_buffer()`, and bounce buffers re-introduce the cache-disabled ISR panic.
 - **Boot Splash & Auto-Dismiss**: Boot splash renders "DashView" wordmark and auto-dismisses after 3 seconds into the Main Dashboard (Page 0), or immediately upon screen tap.
+- **Display Flicker Root Causes & Fixes**:
+  1. *Unbuffered Full-Screen Wipe*: `updateDisplay()` was calling `canvas.fillScreen(C_DARK_BG)` every 16ms (60 FPS) on the active scanout buffer. Wiping and redrawing unbuffered into the active buffer causes severe tearing and strobing. Redraw only dirty gauge rects/labels in place, or switch to double-buffering (`num_fbs = 2`).
+  2. *Low Refresh Rate (~33 Hz)*: 14 MHz `pclk_hz` with total clock count 423,120 yields only 33 Hz. Increasing `pclk_hz` (e.g., 16 MHz) with tuned porches (pulse=10, back=10, front=10) brings refresh rate to 50-60 Hz without bus starvation.
 - **Touch**: GT911 at `0x5D` on shared I2C bus is wired to `displayTouchRead()` and `pollTouch()`.
 - **Build & Flash**: Working cleanly via PlatformIO in the container environment.
 
