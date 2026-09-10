@@ -76,7 +76,7 @@ void cdSeedDefaults();
 void cdAppendQueries(uint8_t modes[], uint8_t pids[], int& count, int cap);
 
 // ---- Rendering ------------------------------------------------------------
-void renderCustomDash();
+void renderCustomDash(bool forceFull = false);
 void renderCustomDashEditor();
 
 // ---- Touch ----------------------------------------------------------------

@@ -72,6 +72,7 @@ bool LVGLCanvas::init(uint16_t w, uint16_t h, uint32_t pclk_hz) {
     cfg.num_fbs = 1;
     cfg.bounce_buffer_size_px = 0;   // Direct GDMA from PSRAM - NO bounce buffer ISR, zero cache panics!
     cfg.flags.fb_in_psram = 1;
+    cfg.dma_burst_size = 64;
     cfg.timings.pclk_hz = pclk_hz;
     cfg.timings.h_res = (uint32_t)w;
     cfg.timings.v_res = (uint32_t)h;
@@ -171,7 +172,7 @@ void LVGLCanvas::hline(int x0, int x1, int y, uint16_t c) {
     if (_flip) {
         for (int x = x0; x <= x1; x++) row[_fbw - 1 - x] = c;
     } else {
-        for (int x = x0; x <= x1; x++) row[x] = c;
+        std::fill(row + x0, row + x1 + 1, c);
     }
     _dirty = true;
 }
@@ -199,7 +200,14 @@ void LVGLCanvas::setFont(const lv_font_t *f) { _font = f; }
 void LVGLCanvas::setTextDatum(uint8_t d) { _datum = d; }
 void LVGLCanvas::setTextPadding(uint16_t p) { _pad = p; }
 
-void LVGLCanvas::fillScreen(uint16_t c) { rect(0, 0, _fbw, _fbh, c); }
+void LVGLCanvas::fillScreen(uint16_t c) {
+    if (!_fb) return;
+    uint32_t c32 = ((uint32_t)c << 16) | c;
+    uint32_t *p32 = (uint32_t *)_fb;
+    size_t count = ((size_t)_fbw * _fbh) / 2;
+    for (size_t i = 0; i < count; i++) p32[i] = c32;
+    _dirty = true;
+}
 void LVGLCanvas::fillRect(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t c) {
     rect(x, y, w, h, c);
 }

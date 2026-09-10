@@ -226,7 +226,7 @@ void cdAppendQueries(uint8_t modes[], uint8_t pids[], int& count, int cap) {
 // =========================================================================
 // GAUGE RENDERING
 // =========================================================================
-static void cdDrawGauge(const CdGauge& g) {
+static void cdDrawGauge(const CdGauge& g, int slotIdx = -1, bool force = false) {
     int x, y, w, h; cdCellRect(g.x, g.y, g.w, g.h, x, y, w, h);
     // 2px inset gutter so gauges never touch
     x += 2; y += 2; w -= 4; h -= 4;
@@ -235,11 +235,6 @@ static void cdDrawGauge(const CdGauge& g) {
 
     bool flashOn = true;
     if (warn && g.warnMode == CD_WARN_FLASH) flashOn = ((millis() / 300) % 2) == 0;
-
-    uint16_t bg = warn ? cdColor((CdColor)g.warnColor) : C_CARD_BG;
-    if (!flashOn) bg = C_CARD_INNER;
-    canvas.fillRoundRect(x, y, w, h, 8, bg);
-    canvas.drawRoundRect(x, y, w, h, 8, border);
 
     CdMeta m = cdIsSig(g) ? cdSigMeta(g.sigKey) : cdMeta(g.pid);
     char labelBuf[24];
@@ -257,11 +252,6 @@ static void cdDrawGauge(const CdGauge& g) {
     } else {
         v = cdVal(g);
     }
-    uint16_t valColor = warn ? (flashOn ? TFT_BLACK : C_TEXT_WHITE) : C_TEXT_WHITE;
-
-    canvas.setFont(fonts::Font2);
-    canvas.setTextColor(warn && flashOn ? TFT_BLACK : C_TEXT_MUTED, bg);
-    canvas.drawString(label, x + 8, y + 6);
 
     char buf[24];
     if (isText) {
@@ -275,6 +265,35 @@ static void cdDrawGauge(const CdGauge& g) {
         snprintf(buf, sizeof(buf), "%.*f%s", g.decimals, v, m.unit[0] ? " " : "");
         if (m.unit[0]) strncat(buf, m.unit, sizeof(buf) - strlen(buf) - 1);
     }
+
+    static char s_lastGaugeBuf[CD_MAX_GAUGES][24];
+    static bool s_lastGaugeWarn[CD_MAX_GAUGES];
+    static bool s_lastGaugeFlash[CD_MAX_GAUGES];
+
+    if (!force && slotIdx >= 0 && slotIdx < CD_MAX_GAUGES) {
+        if (strcmp(buf, s_lastGaugeBuf[slotIdx]) == 0 &&
+            warn == s_lastGaugeWarn[slotIdx] &&
+            flashOn == s_lastGaugeFlash[slotIdx]) {
+            return;
+        }
+    }
+    if (slotIdx >= 0 && slotIdx < CD_MAX_GAUGES) {
+        strncpy(s_lastGaugeBuf[slotIdx], buf, sizeof(s_lastGaugeBuf[slotIdx]) - 1);
+        s_lastGaugeBuf[slotIdx][sizeof(s_lastGaugeBuf[slotIdx]) - 1] = '\0';
+        s_lastGaugeWarn[slotIdx] = warn;
+        s_lastGaugeFlash[slotIdx] = flashOn;
+    }
+
+    uint16_t bg = warn ? cdColor((CdColor)g.warnColor) : C_CARD_BG;
+    if (!flashOn) bg = C_CARD_INNER;
+    canvas.fillRoundRect(x, y, w, h, 8, bg);
+    canvas.drawRoundRect(x, y, w, h, 8, border);
+
+    uint16_t valColor = warn ? (flashOn ? TFT_BLACK : C_TEXT_WHITE) : C_TEXT_WHITE;
+
+    canvas.setFont(fonts::Font2);
+    canvas.setTextColor(warn && flashOn ? TFT_BLACK : C_TEXT_MUTED, bg);
+    canvas.drawString(label, x + 8, y + 6);
 
     int valSize = (h > 70) ? 2 : ((h > 46) ? 1 : 0);
     canvas.setFont(valSize == 2 ? fonts::Font4 : fonts::Font2);
@@ -317,20 +336,34 @@ static void cdDrawCustomizePill() {
     canvas.drawCenterString("CUSTOMIZE", CD_BTN_CUST_X + CD_BTN_CUST_W / 2, CD_BTN_CUST_Y + 4);
 }
 
-void renderCustomDash() {
+void renderCustomDash(bool forceFull) {
     if (g_cdEditorKind != CD_EDIT_NONE) { renderCustomDashEditor(); return; }
-    drawHeaderBar(g_cdEditMode ? "CUSTOM DASH - EDIT MODE" : "CUSTOM DASH");
+
+    static unsigned long s_lastCdHeader = 0;
+    if (forceFull) {
+        s_lastCdHeader = millis();
+        drawHeaderBar(g_cdEditMode ? "CUSTOM DASH - EDIT MODE" : "CUSTOM DASH", true);
+    } else if (millis() - s_lastCdHeader >= 1000) {
+        s_lastCdHeader = millis();
+        drawHeaderBar(g_cdEditMode ? "CUSTOM DASH - EDIT MODE" : "CUSTOM DASH", false);
+    }
 
     if (!g_cdEditMode) {
-        if (g_cdGaugeCount == 0) {
-            canvas.setFont(fonts::Font4); canvas.setTextColor(C_TEXT_MUTED);
-            canvas.drawCenterString("No gauges yet.", 400, 220);
-            canvas.drawCenterString("Tap CUSTOMIZE to add one.", 400, 250);
+        if (forceFull) {
+            if (g_cdGaugeCount == 0) {
+                canvas.setFont(fonts::Font4); canvas.setTextColor(C_TEXT_MUTED);
+                canvas.drawCenterString("No gauges yet.", 400, 220);
+                canvas.drawCenterString("Tap CUSTOMIZE to add one.", 400, 250);
+            }
+            for (int i = 0; i < CD_MAX_GAUGES; i++)
+                if (g_cdGauges[i].valid) cdDrawGauge(g_cdGauges[i], i, true);
+            cdDrawCustomizePill();
+            drawBottomNavBar();
+            return;
         }
+
         for (int i = 0; i < CD_MAX_GAUGES; i++)
-            if (g_cdGauges[i].valid) cdDrawGauge(g_cdGauges[i]);
-        cdDrawCustomizePill();
-        drawBottomNavBar();
+            if (g_cdGauges[i].valid) cdDrawGauge(g_cdGauges[i], i, false);
         return;
     }
 
@@ -342,7 +375,7 @@ void renderCustomDash() {
         canvas.drawLine(CD_GRID_X, CD_GRID_Y + r * CD_CELL_H, CD_GRID_X + CD_GRID_W, CD_GRID_Y + r * CD_CELL_H, canvas.color565(30, 36, 50));
     for (int i = 0; i < CD_MAX_GAUGES; i++) {
         if (!g_cdGauges[i].valid) continue;
-        cdDrawGauge(g_cdGauges[i]);
+        cdDrawGauge(g_cdGauges[i], i, true);
         // resize handle (bottom-right corner)
         int x, y, w, h; cdCellRect(g_cdGauges[i].x, g_cdGauges[i].y, g_cdGauges[i].w, g_cdGauges[i].h, x, y, w, h);
         canvas.fillTriangle(x + w - 4, y + h - 4, x + w - 22, y + h - 4, x + w - 4, y + h - 22, C_TEXT_CYAN);
