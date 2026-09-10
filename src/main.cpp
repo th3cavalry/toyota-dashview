@@ -995,52 +995,7 @@ void initGt911Touch() {
 }
 
 bool pollTouch(int &screenX, int &screenY) {
-    if (!gt911Addr) return false;
-
-    Wire.beginTransmission(gt911Addr);
-    Wire.write((uint8_t)(GT911_REG_POINT_STAT >> 8));
-    Wire.write((uint8_t)(GT911_REG_POINT_STAT & 0xFF));
-    if (Wire.endTransmission(false) != 0 || Wire.requestFrom(gt911Addr, (uint8_t)1) != 1) {
-        return false;
-    }
-    uint8_t status = Wire.read();
-    if (!(status & 0x80)) return false;          // no new data
-    uint8_t count = status & 0x0F;
-    if (count == 0 || count > 5) {               // flush flag and bail
-        Wire.beginTransmission(gt911Addr);
-        Wire.write((uint8_t)(GT911_REG_POINT_STAT >> 8));
-        Wire.write((uint8_t)(GT911_REG_POINT_STAT & 0xFF));
-        Wire.write(0);
-        Wire.endTransmission();
-        return false;
-    }
-
-    // Point 1 track data: [id, xL, xH, yL, yH, ...] from 0x8150
-    Wire.beginTransmission(gt911Addr);
-    Wire.write((uint8_t)(0x8150 >> 8));
-    Wire.write((uint8_t)(0x8150 & 0xFF));
-    bool ok = (Wire.endTransmission(false) == 0 && Wire.requestFrom(gt911Addr, (uint8_t)5) == 5);
-    uint8_t pt[5] = {0};
-    if (ok) Wire.readBytes(pt, 5);
-
-    // Clear the buffer-ready flag so the controller updates again
-    Wire.beginTransmission(gt911Addr);
-    Wire.write((uint8_t)(GT911_REG_POINT_STAT >> 8));
-    Wire.write((uint8_t)(GT911_REG_POINT_STAT & 0xFF));
-    Wire.write(0);
-    Wire.endTransmission();
-
-    if (!ok) return false;
-    int rawX = pt[1] | (pt[2] << 8);
-    int rawY = pt[3] | (pt[4] << 8);
-    if (rawX > 799) rawX = 799;
-    if (rawY > 479) rawY = 479;
-
-    // 180-deg mount flip: map panel coordinates back into canvas space so all
-    // hit-box rectangles can stay written in normal orientation.
-    screenX = isDisplayFlipped ? 799 - rawX : rawX;
-    screenY = isDisplayFlipped ? 479 - rawY : rawY;
-    return true;
+    return displayTouchRead(screenX, screenY);
 }
 
 // =========================================================================

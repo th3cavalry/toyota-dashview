@@ -45,6 +45,7 @@ public:
     void setRotation(uint8_t r);
 
     lv_display_t* display() const { return _disp; }
+    uint8_t* frameBuffer() const { return _fb; }
 
 private:
     void px(int x, int y, uint16_t c);
@@ -55,6 +56,7 @@ private:
     int32_t  textH() const;
     void     invalidateRect(int32_t x, int32_t y, int32_t w, int32_t h);
     lv_display_t* _disp = nullptr;
+    uint8_t* _fb = nullptr;
     const lv_font_t* _font = nullptr;
     uint16_t _fg = 0xFFFF;
     uint8_t  _datum = 0;

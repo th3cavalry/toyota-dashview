@@ -1,20 +1,7 @@
-/* LVGL 9 render core, 4.3B (LVGL-MIGRATION.md S1).
-
-   Bounce-buffer-only scan-out — esp_lcd RGB "no_fb" mode. There is NO frame
-   buffer anywhere, not even in PSRAM: two 3.2 KB internal-SRAM bounce buffers
-   (one 800px RGB565 line each, 1600 B) ARE the scan-out source and the two LVGL
-   draw buffers. The GDMA EOF ISR fires per line (~59 us at 14 MHz pclk): in
-   no_fb mode the driver calls on_bounce_empty INSTEAD of the framebuffer->bounce
-   memcpy — so the ISR path contains zero PSRAM reads, zero cache-sync tricks.
-   The boot-loop panic "Cache disabled but cached memory region accessed" came
-   from exactly that deleted memcpy reading cached PSRAM while SPI flash ops
-   (WiFi/NVS/SD init — spi_flash_op_block_func on the backtrace) disabled the
-   DCache on both cores. No framebuffer, no memcpy, no cached PSRAM in the ISR:
-   unreachable by construction — and the PSRAM-bandwidth flicker it fed dies too.
-   Layout: bounce buffer k feeds physical lines k, k+2, … (1600 B = one line, so
-   bounce_pos_px steps 800 px per EOF); LVGL renders DIRECT into the idle buffer.
-   GT911 -> LVGL indev (11a218d fix kept); CH422G -> brightness.
-   Boot splash is plain canvas drawing (splash.cpp).
+/* LVGL 9 render core, Waveshare ESP32-S3-Touch-LCD-4.3B (800x480 RGB LCD).
+   Single PSRAM frame buffer with direct GDMA scan-out (bounce_buffer_size_px = 0).
+   By avoiding the bounce buffer ISR, GDMA transfers directly via hardware DMA,
+   completely eliminating the "Cache disabled but cached memory region accessed" panic.
 */
 
 #include "display.h"
@@ -31,75 +18,15 @@
 #include <algorithm>
 
 #include <lvgl.h>
-#include "draw/lv_draw_buf_private.h"   // full lv_draw_buf_handlers_t (lvgl.h only fwd-declares)
 #include <Wire.h>
 
-// from main.cpp (CH422G expander, defined in the display section below setup())
+// from main.cpp (CH422G expander)
 void ch422gSetPin(uint8_t bit, bool level);
 
-LVGLCanvas canvas;   // drawing alias — same name the UI code already uses
+LVGLCanvas canvas;   // drawing alias — used by all UI screens
 
 static esp_lcd_panel_handle_t g_panel = nullptr;
 static bool g_backlightOn = true;
-static uint8_t *g_bb[2] = {nullptr, nullptr};  // bounce bufs = the two draw buffers
-
-static bool IRAM_ATTR on_bounce_empty(esp_lcd_panel_handle_t panel,
-                                      void *bounce_buf, int pos_px,
-                                      int len_bytes, void *user_ctx) {
-    // GDMA EOF ISR (~every 59 us): bounce buffer (pos_px/800)&1 just streamed out
-    // its single line (line pos_px/800) to the panel. no_fb mode calls us INSTEAD
-    // of the PSRAM memcpy — the buffer is already LVGL-current (flush_cb wrote the
-    // dirty rect into it pre-ISR), so there is nothing to fill. Never yield here.
-    (void)bounce_buf; (void)pos_px; (void)len_bytes; (void)panel; (void)user_ctx;
-    return false;
-}
-
-static bool IRAM_ATTR on_vsync(esp_lcd_panel_handle_t panel,
-                               const esp_lcd_rgb_panel_event_data_t *edata,
-                               void *user_ctx) {
-    // VSYNC: one frame scanned out; bounce_pos_px resets, buffer 0 leads again.
-    return false;
-}
-
-static void IRAM_ATTR on_flush(lv_display_t *disp, const lv_area_t *area,
-                               uint8_t *px_map) {
-    // DIRECT mode: px_map is the whole-frame draw buffer = the bounce buffer LVGL
-    // just rendered into (buf_act's data; g_bb[buf_act==buf_1]). That buffer
-    // physically holds exactly one line: physical line L lives in buffer L&1 at
-    // pixel offset (L>>1)*800 (bounce_pos_px steps one 800px line per EOF). So
-    // copy the rect's rows there — internal-SRAM -> internal-SRAM memcpy through
-    // the DCache, safe by construction even with the cache disabled.
-    (void)disp;
-    const int x0 = std::max<int32_t>(area->x1, 0), x1 = std::min<int32_t>(area->x2 + 1, 800);
-    const int y0 = std::max<int32_t>(area->y1, 0), y1 = std::min<int32_t>(area->y2 + 1, 480);
-    if (x0 >= x1 || y0 >= y1) return;
-    const uint16_t *src = (const uint16_t *)px_map;   // strip rows start at 0
-    for (int y = y0; y < y1; y++)
-        memcpy(g_bb[y & 1] + (size_t)(y >> 1) * 1600 + (size_t)x0 * 2,
-               src + (size_t)(y - y0) * 800 + x0, (size_t)(x1 - x0) * 2);
-}
-
-// ---- LVGL draw-buffer handlers: bounce buffers are 32B-aligned internal SRAM;
-// nothing here sits behind the PSRAM cache, so the cache ops are no-ops and the
-// LVGL_DRAW_BUF_*_ALIGN configs must match the 32-byte DMA alignment.
-static void *bbbuf_malloc(size_t size, lv_color_format_t cf) {
-    (void)cf;
-    return heap_caps_aligned_calloc(32, 1, size + 31,
-                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-}
-static void bbbuf_free(void *p) { free(p); }
-static void *bbbuf_align(void *p, lv_color_format_t cf) {
-    (void)cf;
-    return (void *)(((lv_uintptr_t)p + 31) & ~(lv_uintptr_t)31);
-}
-static void bbbuf_copy(lv_draw_buf_t *dst, const lv_area_t *dst_area,
-                       const lv_draw_buf_t *src, const lv_area_t *src_area) {
-    (void)dst_area; (void)src_area;
-    memcpy(dst->data, src->data, src->data_size);
-}
-static uint32_t bbbuf_stride(uint32_t w, lv_color_format_t cf) {
-    return LV_ROUND_UP(w * lv_color_format_get_bpp(cf) / 8, 32);
-}
 
 // ---- static scratch buffer for lv_font_get_glyph_bitmap ----
 static uint8_t glyph_bitmap_buf[4096];
@@ -118,13 +45,12 @@ static void ensure_glyph_scratch(void) {
 static uint32_t _arduino_string_codepoint_at(const String &s, size_t &i) {
     if (i >= (size_t)s.length()) return 0;
     char c = s[i];
-    uint32_t cp;
-    int len;
+    uint32_t cp = (uint8_t)c;
+    int len = 1;
     if ((c & 0x80) == 0) { cp = (uint8_t)c; len = 1; }
     else if ((c & 0xE0) == 0xC0) { cp = (uint8_t)c & 0x1F; len = 2; }
     else if ((c & 0xF0) == 0xE0) { cp = (uint8_t)c & 0x0F; len = 3; }
     else if ((c & 0xF8) == 0xF0) { cp = (uint8_t)c & 0x07; len = 4; }
-    else { cp = (uint8_t)c; len = 1; }
     for (int k = 1; k < len && i + k < (size_t)s.length(); k++) {
         cp = (cp << 6) | ((uint8_t)s[i + k] & 0x3F);
     }
@@ -135,52 +61,62 @@ static uint32_t _arduino_string_codepoint_at(const String &s, size_t &i) {
 bool LVGLCanvas::init(uint16_t w, uint16_t h, uint32_t pclk_hz) {
     _w = w; _h = h; _fbw = w; _fbh = h;
 
+    Serial.printf("[DISPLAY] Initializing RGB panel %dx%d (pclk: %lu Hz)...\n", w, h, (unsigned long)pclk_hz);
+
     static const int data_gpio[16] = {14, 38, 18, 17, 10, 39, 0, 45,
                                       48, 47, 21, 1,  2,  42, 41, 40};
 
     esp_lcd_rgb_panel_config_t cfg = {};
     cfg.clk_src = LCD_CLK_SRC_PLL160M;
     cfg.data_width = 16;
-    cfg.bounce_buffer_size_px = 800;   // one 565 line per bounce buffer: 800px*2B = 1600B
-    cfg.flags.no_fb = 1;               // bounce-buffer-only mode: no FB, no PSRAM, no panic
+    cfg.num_fbs = 1;
+    cfg.bounce_buffer_size_px = 0;   // Direct GDMA from PSRAM - NO bounce buffer ISR, zero cache panics!
+    cfg.flags.fb_in_psram = 1;
     cfg.timings.pclk_hz = pclk_hz;
-    cfg.timings.h_res = (uint32_t)w; cfg.timings.v_res = (uint32_t)h;
-    cfg.timings.hsync_pulse_width = 4; cfg.timings.hsync_back_porch = 8; cfg.timings.hsync_front_porch = 8;
-    cfg.timings.vsync_pulse_width = 4; cfg.timings.vsync_back_porch = 16; cfg.timings.vsync_front_porch = 16;
+    cfg.timings.h_res = (uint32_t)w;
+    cfg.timings.v_res = (uint32_t)h;
+    cfg.timings.hsync_pulse_width = 4;
+    cfg.timings.hsync_back_porch = 8;
+    cfg.timings.hsync_front_porch = 8;
+    cfg.timings.vsync_pulse_width = 4;
+    cfg.timings.vsync_back_porch = 16;
+    cfg.timings.vsync_front_porch = 16;
     cfg.timings.flags.hsync_idle_low = 1;
     cfg.timings.flags.vsync_idle_low = 1;
     cfg.timings.flags.de_idle_high = 0;
     cfg.timings.flags.pclk_active_neg = 1;
     cfg.timings.flags.pclk_idle_high = 1;
     for (int i = 0; i < 16; i++) cfg.data_gpio_nums[i] = data_gpio[i];
-    cfg.de_gpio_num = 5;   cfg.hsync_gpio_num = 46;
-    cfg.vsync_gpio_num = 3; cfg.pclk_gpio_num = 7;
+    cfg.de_gpio_num = 5;
+    cfg.hsync_gpio_num = 46;
+    cfg.vsync_gpio_num = 3;
+    cfg.pclk_gpio_num = 7;
     cfg.disp_gpio_num = -1;
 
-    esp_lcd_rgb_panel_event_callbacks_t cbs = {};
-    cbs.on_bounce_empty = on_bounce_empty;
-    cbs.on_vsync = on_vsync;
-
-    if (esp_lcd_new_rgb_panel(&cfg, &g_panel) != ESP_OK) return false;
-    // No esp_lcd_panel_init/reset here: the v5.3 RGB driver auto-starts
-    // transmission inside esp_lcd_new_rgb_panel (its start_transmission pre-fills
-    // both bounce buffers itself). An external reset/init would only restart that
-    // GDMA chain pointlessly — and in fb_in_psram modes re-arm the PSRAM panic.
-    esp_lcd_rgb_panel_register_event_callbacks(g_panel, &cbs, nullptr);
-
-    // Publish the two bounce buffers to LVGL as the ONLY draw buffers. The driver
-    // sized them 800px*2B, 32B-aligned internal SRAM, and already pre-filled both
-    // (bounce_pos_px=0) — the first flush lands in the idle one immediately.
-    void *bb0 = nullptr, *bb1 = nullptr;
-    if (esp_lcd_rgb_panel_get_frame_buffer(g_panel, 2, &bb0, &bb1) != ESP_OK || !bb0 || !bb1)
+    esp_err_t err = esp_lcd_new_rgb_panel(&cfg, &g_panel);
+    if (err != ESP_OK) {
+        Serial.printf("[DISPLAY] esp_lcd_new_rgb_panel failed: 0x%x\n", err);
         return false;
-    g_bb[0] = (uint8_t *)bb0; g_bb[1] = (uint8_t *)bb1;
+    }
 
-    lv_draw_buf_handlers_t *handlers = lv_draw_buf_get_handlers();
-    handlers->buf_malloc_cb = bbbuf_malloc; handlers->buf_free_cb = bbbuf_free;
-    handlers->buf_copy_cb = bbbuf_copy; handlers->align_pointer_cb = bbbuf_align;
-    handlers->invalidate_cache_cb = nullptr; handlers->flush_cache_cb = nullptr;
-    handlers->width_to_stride_cb = bbbuf_stride;
+    err = esp_lcd_panel_reset(g_panel);
+    if (err != ESP_OK) {
+        Serial.printf("[DISPLAY] esp_lcd_panel_reset returned 0x%x\n", err);
+    }
+    err = esp_lcd_panel_init(g_panel);
+    if (err != ESP_OK) {
+        Serial.printf("[DISPLAY] esp_lcd_panel_init returned 0x%x\n", err);
+    }
+
+    void *fb0 = nullptr;
+    err = esp_lcd_rgb_panel_get_frame_buffer(g_panel, 1, &fb0);
+    if (err != ESP_OK || !fb0) {
+        Serial.printf("[DISPLAY] esp_lcd_rgb_panel_get_frame_buffer failed: 0x%x, fb0=%p\n", err, fb0);
+        return false;
+    }
+    _fb = (uint8_t *)fb0;
+    Serial.printf("[DISPLAY] PSRAM frame buffer ready: %p (%u bytes)\n", _fb, (unsigned)(w * h * 2));
+    memset(_fb, 0, (size_t)w * h * 2);
 
     static bool lv_inited = false;
     if (!lv_inited) {
@@ -189,17 +125,9 @@ bool LVGLCanvas::init(uint16_t w, uint16_t h, uint32_t pclk_hz) {
     }
     lv_display_t *disp = lv_display_create(w, h);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
-    // PARTIAL mode onto the bounce pair: each buffer holds exactly ONE physical
-    // line — bounce buffer k feeds physical lines k, k+2, … (line L at row L>>1,
-    // bounce_pos_px steps one 800px line per GDMA EOF). LVGL renders one line
-    // into the idle buffer; the ISR flips which buffer feeds which line.
-    lv_display_set_buffers(disp, g_bb[0], g_bb[1], (size_t)800 * 2,
-                           LV_DISPLAY_RENDER_MODE_PARTIAL);
-    lv_display_set_flush_cb(disp, on_flush);
+    lv_display_set_buffers(disp, _fb, nullptr, (size_t)w * h * 2, LV_DISPLAY_RENDER_MODE_DIRECT);
     _disp = disp;
 
-    memset(g_bb[0], 0, 1600);   // black until the splash paints
-    memset(g_bb[1], 0, 1600);
     return true;
 }
 
@@ -223,25 +151,40 @@ void LVGLCanvas::setRotation(uint8_t r) {
                                                     : LV_DISPLAY_ROTATION_0);
 }
 
-// ---- compat shim: LGFX drawing API straight into the bounce-buffer pair ----
-// Physical line L lives in buffer L&1, row L>>1 (pixel offset (L>>1)*800): the
-// shim paints the buffer NOT being scanned — plain 16-bit stores into internal
-// SRAM through the DCache. No PSRAM, no cache-sync games, nothing to panic on.
+// ---- Drawing primitives straight into the PSRAM frame buffer ----
 
 void LVGLCanvas::px(int x, int y, uint16_t c) {
-    if (unsigned(x) > _fbw - 1 || unsigned(y) > _fbh - 1) return;
+    if (unsigned(x) > _fbw - 1 || unsigned(y) > _fbh - 1 || !_fb) return;
     int dx = _flip ? _fbw - 1 - x : x;
     int dy = _flip ? _fbh - 1 - y : y;
-    uint8_t *bb = g_bb[dy & 1];
-    if (!bb) return;                       // ISR hasn't published buffers yet
-    ((uint16_t *)bb)[(size_t)(dy >> 1) * _fbw + dx] = c;
+    ((uint16_t *)_fb)[(size_t)dy * _fbw + dx] = c;
     _dirty = true;
 }
 void LVGLCanvas::hline(int x0, int x1, int y, uint16_t c) {
-    for (int x = x0; x <= x1; x++) px(x, y, c);
+    if (unsigned(y) > _fbh - 1 || !_fb) return;
+    if (x0 > x1) std::swap(x0, x1);
+    if (x1 < 0 || x0 >= (int)_fbw) return;
+    x0 = std::max(0, x0);
+    x1 = std::min((int)_fbw - 1, x1);
+    int dy = _flip ? _fbh - 1 - y : y;
+    uint16_t *row = (uint16_t *)_fb + (size_t)dy * _fbw;
+    if (_flip) {
+        for (int x = x0; x <= x1; x++) row[_fbw - 1 - x] = c;
+    } else {
+        for (int x = x0; x <= x1; x++) row[x] = c;
+    }
+    _dirty = true;
 }
 void LVGLCanvas::rect(int x, int y, int w, int h, uint16_t c) {
-    for (int yy = y; yy < y + h; yy++) hline(x, x + w - 1, yy, c);
+    if (!_fb) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > (int)_fbw) w = _fbw - x;
+    if (y + h > (int)_fbh) h = _fbh - y;
+    if (w <= 0 || h <= 0) return;
+    for (int yy = y; yy < y + h; yy++) {
+        hline(x, x + w - 1, yy, c);
+    }
     _dirty = true;
 }
 void LVGLCanvas::invalidateRect(int32_t, int32_t, int32_t, int32_t) {
