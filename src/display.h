@@ -49,8 +49,11 @@ public:
 
 private:
     void px(int x, int y, uint16_t c);
+    void px_blend(int x, int y, uint16_t fg, uint8_t alpha);
     void hline(int x0, int x1, int y, uint16_t c);
     void rect(int x, int y, int w, int h, uint16_t c);
+    void drawCircleHelper(int32_t x0, int32_t y0, int32_t r, uint8_t corners, uint16_t c);
+    void fillCircleHelper(int32_t x0, int32_t y0, int32_t r, uint8_t corners, int32_t delta, uint16_t c);
     void glyph(const lv_font_t* f, uint32_t cp, int32_t& x, int32_t y);
     int32_t  textW(const String& s) const;
     int32_t  textH() const;
@@ -74,3 +77,4 @@ void displayBacklightOff();
 bool displayBacklightEnabled();
 void displayTouchInit();
 bool displayTouchRead(int& x, int& y);
+uint8_t displayTouchGetAddr();

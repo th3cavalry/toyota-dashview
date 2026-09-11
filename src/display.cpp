@@ -29,17 +29,8 @@ static esp_lcd_panel_handle_t g_panel = nullptr;
 static bool g_backlightOn = true;
 
 // ---- static scratch buffer for lv_font_get_glyph_bitmap ----
-static uint8_t glyph_bitmap_buf[4096];
+static uint8_t glyph_bitmap_buf[8192];
 static lv_draw_buf_t glyph_scratch = {};
-static bool           glyph_scratch_ready = false;
-
-static void ensure_glyph_scratch(void) {
-    if (!glyph_scratch_ready) {
-        lv_draw_buf_init(&glyph_scratch, 32, 32, LV_COLOR_FORMAT_A8, 32,
-                         glyph_bitmap_buf, sizeof(glyph_bitmap_buf));
-        glyph_scratch_ready = true;
-    }
-}
 
 // ---- Arduino String is UTF-8; decode codepoints manually ----
 static uint32_t _arduino_string_codepoint_at(const String &s, size_t &i) {
@@ -161,6 +152,29 @@ void LVGLCanvas::px(int x, int y, uint16_t c) {
     ((uint16_t *)_fb)[(size_t)dy * _fbw + dx] = c;
     _dirty = true;
 }
+
+void LVGLCanvas::px_blend(int x, int y, uint16_t fg, uint8_t alpha) {
+    if (unsigned(x) > _fbw - 1 || unsigned(y) > _fbh - 1 || !_fb) return;
+    int dx = _flip ? _fbw - 1 - x : x;
+    int dy = _flip ? _fbh - 1 - y : y;
+    uint16_t *p = &((uint16_t *)_fb)[(size_t)dy * _fbw + dx];
+    uint16_t bg = *p;
+
+    uint32_t fg_r = (fg >> 11) & 0x1F;
+    uint32_t fg_g = (fg >> 5)  & 0x3F;
+    uint32_t fg_b =  fg        & 0x1F;
+
+    uint32_t bg_r = (bg >> 11) & 0x1F;
+    uint32_t bg_g = (bg >> 5)  & 0x3F;
+    uint32_t bg_b =  bg        & 0x1F;
+
+    uint32_t r = (fg_r * alpha + bg_r * (255 - alpha)) / 255;
+    uint32_t g = (fg_g * alpha + bg_g * (255 - alpha)) / 255;
+    uint32_t b = (fg_b * alpha + bg_b * (255 - alpha)) / 255;
+
+    *p = (uint16_t)((r << 11) | (g << 5) | b);
+    _dirty = true;
+}
 void LVGLCanvas::hline(int x0, int x1, int y, uint16_t c) {
     if (unsigned(y) > _fbh - 1 || !_fb) return;
     if (x0 > x1) std::swap(x0, x1);
@@ -231,27 +245,99 @@ void LVGLCanvas::drawLine(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint16
 void LVGLCanvas::drawFastHLine(int32_t x, int32_t y, int32_t l, uint16_t c) {
     hline(x, x + l - 1, y, c);
 }
-void LVGLCanvas::fillRoundRect(int32_t x, int32_t y, int32_t w, int32_t h,
-                               int32_t r, uint16_t c) {
-    if (r < 2) { rect(x, y, w, h, c); return; }
-    rect(x + r, y, w - 2 * r, h, c);
-    rect(x, y + r, r, h - 2 * r, c);
-    rect(x + w - r, y + r, r, h - 2 * r, c);
-    rect(x + r, y, w - 2 * r, r, c);
-    rect(x + r, y + h - r, w - 2 * r, r, c);
-    px(x + r, y + r, c); px(x + w - r, y + r, c);
-    px(x + r, y + h - r, c); px(x + w - r, y + h - r, c);
-}
-void LVGLCanvas::drawRoundRect(int32_t x, int32_t y, int32_t w, int32_t h,
-                               int32_t r, uint16_t c) {
-    hline(x + r, x + w - r, y, c); hline(x + r, x + w - r, y + h - 1, c);
-    for (int yy = y + r; yy < y + h - r; yy++) { px(x, yy, c); px(x + w - 1, yy, c); }
-    px(x + r, y + r, c); px(x + w - r, y + r, c);
-    px(x + r, y + h - r, c); px(x + w - r, y + h - r, c);
-    _dirty = true;
-}
+
 void LVGLCanvas::drawFastVLine(int32_t x, int32_t y, int32_t h, uint16_t c) {
     for (int32_t yy = y; yy < y + h; yy++) px(x, yy, c);
+    _dirty = true;
+}
+
+void LVGLCanvas::drawCircleHelper(int32_t x0, int32_t y0, int32_t r, uint8_t corners, uint16_t c) {
+    int32_t f = 1 - r;
+    int32_t ddF_x = 1;
+    int32_t ddF_y = -2 * r;
+    int32_t x = 0;
+    int32_t y = r;
+
+    while (x < y) {
+        if (f >= 0) {
+            y--;
+            ddF_y += 2;
+            f += ddF_y;
+        }
+        x++;
+        ddF_x += 2;
+        f += ddF_x;
+        if (corners & 0x4) { // Top Right
+            px(x0 + x, y0 - y, c);
+            px(x0 + y, y0 - x, c);
+        }
+        if (corners & 0x2) { // Top Left
+            px(x0 - y, y0 - x, c);
+            px(x0 - x, y0 - y, c);
+        }
+        if (corners & 0x1) { // Bottom Left
+            px(x0 - x, y0 + y, c);
+            px(x0 - y, y0 + x, c);
+        }
+        if (corners & 0x8) { // Bottom Right
+            px(x0 + y, y0 + x, c);
+            px(x0 + x, y0 + y, c);
+        }
+    }
+}
+
+void LVGLCanvas::fillCircleHelper(int32_t x0, int32_t y0, int32_t r, uint8_t corners, int32_t delta, uint16_t c) {
+    int32_t f = 1 - r;
+    int32_t ddF_x = 1;
+    int32_t ddF_y = -2 * r;
+    int32_t x = 0;
+    int32_t y = r;
+
+    while (x < y) {
+        if (f >= 0) {
+            y--;
+            ddF_y += 2;
+            f += ddF_y;
+        }
+        x++;
+        ddF_x += 2;
+        f += ddF_x;
+
+        if (corners & 0x1) { // Left half
+            drawFastVLine(x0 - x, y0 - y, 2 * y + 1 + delta, c);
+            drawFastVLine(x0 - y, y0 - x, 2 * x + 1 + delta, c);
+        }
+        if (corners & 0x2) { // Right half
+            drawFastVLine(x0 + x, y0 - y, 2 * y + 1 + delta, c);
+            drawFastVLine(x0 + y, y0 - x, 2 * x + 1 + delta, c);
+        }
+    }
+}
+
+void LVGLCanvas::drawRoundRect(int32_t x, int32_t y, int32_t w, int32_t h,
+                               int32_t r, uint16_t c) {
+    if (r <= 0) { drawRect(x, y, w, h, c); return; }
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    drawFastHLine(x + r, y, w - 2 * r, c);
+    drawFastHLine(x + r, y + h - 1, w - 2 * r, c);
+    drawFastVLine(x, y + r, h - 2 * r, c);
+    drawFastVLine(x + w - 1, y + r, h - 2 * r, c);
+    drawCircleHelper(x + r,         y + r,         r, 0x2, c); // Top Left
+    drawCircleHelper(x + w - r - 1, y + r,         r, 0x4, c); // Top Right
+    drawCircleHelper(x + w - r - 1, y + h - r - 1, r, 0x8, c); // Bottom Right
+    drawCircleHelper(x + r,         y + h - r - 1, r, 0x1, c); // Bottom Left
+    _dirty = true;
+}
+
+void LVGLCanvas::fillRoundRect(int32_t x, int32_t y, int32_t w, int32_t h,
+                               int32_t r, uint16_t c) {
+    if (r <= 0) { fillRect(x, y, w, h, c); return; }
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    fillRect(x + r, y, w - 2 * r, h, c);
+    fillCircleHelper(x + w - r - 1, y + r, r, 0x2, h - 2 * r - 1, c);
+    fillCircleHelper(x + r,         y + r, r, 0x1, h - 2 * r - 1, c);
     _dirty = true;
 }
 void LVGLCanvas::drawCircle(int32_t x, int32_t y, int32_t r, uint16_t c) {
@@ -311,10 +397,11 @@ int32_t LVGLCanvas::textW(const String &s) const {
     while (i < (size_t)s.length()) {
         uint32_t cp = _arduino_string_codepoint_at(s, i);
         lv_font_glyph_dsc_t dsc = {};
-        if (lv_font_get_glyph_dsc(_font, &dsc, cp, 0) && (dsc.adv_w || cp == ' '))
+        if (lv_font_get_glyph_dsc(_font, &dsc, cp, 0)) {
             w += dsc.adv_w;
+        }
     }
-    return w + _pad * std::max(1, (int)(s.length() ? s.length() : 1));
+    return w + _pad * (int32_t)s.length();
 }
 
 int32_t LVGLCanvas::textH() const {
@@ -322,32 +409,50 @@ int32_t LVGLCanvas::textH() const {
 }
 
 void LVGLCanvas::glyph(const lv_font_t *f, uint32_t cp, int32_t &x, int32_t y) {
-    if (cp == ' ') { x += 6; return; }
-
-    ensure_glyph_scratch();
+    if (!f) return;
 
     lv_font_glyph_dsc_t dsc = {};
-    if (!lv_font_get_glyph_dsc(f, &dsc, cp, 0)) { x += dsc.adv_w ?: 6; return; }
+    if (!lv_font_get_glyph_dsc(f, &dsc, cp, 0)) {
+        return;
+    }
+
+    if (dsc.box_w == 0 || dsc.box_h == 0) {
+        x += dsc.adv_w;
+        return;
+    }
+
+    uint32_t stride = lv_draw_buf_width_to_stride(dsc.box_w, LV_COLOR_FORMAT_A8);
+    lv_draw_buf_init(&glyph_scratch, dsc.box_w, dsc.box_h, LV_COLOR_FORMAT_A8, stride,
+                     glyph_bitmap_buf, sizeof(glyph_bitmap_buf));
 
     const void *raw = lv_font_get_glyph_bitmap(&dsc, &glyph_scratch);
-    if (!raw) { x += dsc.adv_w ?: 6; return; }
-
-    int32_t bw  = dsc.box_w;
-    int32_t bh  = dsc.box_h;
-    int32_t ox_ = dsc.ofs_x;
-    int32_t oy_ = dsc.ofs_y;
+    if (!raw) {
+        x += dsc.adv_w;
+        return;
+    }
 
     const lv_draw_buf_t *draw_buf = (const lv_draw_buf_t *)raw;
     const uint8_t *bitmap = (const uint8_t *)draw_buf->data;
-    uint32_t stride = draw_buf->header.stride ? draw_buf->header.stride : (uint32_t)bw;
+    if (!bitmap) {
+        x += dsc.adv_w;
+        return;
+    }
 
-    if (bw > 0 && bh > 0 && bitmap) {
-        for (int yy = 0; yy < bh; yy++) {
-            for (int xx = 0; xx < bw; xx++) {
-                uint8_t alpha = bitmap[yy * stride + xx];
-                if (alpha > 32) {
-                    px(x + ox_ + xx, y + (lv_font_get_line_height(f) - bh - oy_) + yy, _fg);
-                }
+    int32_t bw = dsc.box_w;
+    int32_t bh = dsc.box_h;
+    int32_t gx = x + dsc.ofs_x;
+    int32_t gy = y + (lv_font_get_line_height(f) - f->base_line) - bh - dsc.ofs_y;
+
+    for (int32_t yy = 0; yy < bh; yy++) {
+        for (int32_t xx = 0; xx < bw; xx++) {
+            uint8_t alpha = bitmap[yy * stride + xx];
+            if (alpha == 0) continue;
+            int32_t px_x = gx + xx;
+            int32_t px_y = gy + yy;
+            if (alpha >= 250) {
+                px(px_x, px_y, _fg);
+            } else if (alpha > 12) {
+                px_blend(px_x, px_y, _fg, alpha);
             }
         }
     }
@@ -355,128 +460,180 @@ void LVGLCanvas::glyph(const lv_font_t *f, uint32_t cp, int32_t &x, int32_t y) {
 }
 
 void LVGLCanvas::drawString(const String &s, int32_t x, int32_t y) {
-    int32_t ox = x, oy = y;
-    if (_datum & 2) { int32_t w = textW(s); ox = x - w / 2; }
-    else if (_datum & 8) { int32_t w = textW(s); ox = x - w; }
-    if (_font) {
-        int32_t yy = oy - textH() / 2;
-        if (_datum & 1) yy = oy;
-        if (_datum & 16) yy = oy - textH();
-        size_t i = 0;
-        while (i < (size_t)s.length()) {
-            uint32_t cp = _arduino_string_codepoint_at(s, i);
-            glyph(_font, cp, ox, yy);
-        }
+    if (!_font || s.length() == 0) return;
+    int32_t w = textW(s);
+    int32_t h = textH();
+    int32_t ox = x;
+    int32_t oy = y;
+
+    // Standard LovyanGFX / TFT_eSPI datum positioning
+    // Horizontal (datum % 3): 0=Left, 1=Center, 2=Right
+    uint8_t hor = _datum % 3;
+    if (hor == 1) ox -= w / 2;
+    else if (hor == 2) ox -= w;
+
+    // Vertical (datum / 3): 0=Top, 1=Middle, 2=Bottom
+    uint8_t vert = _datum / 3;
+    if (vert == 1) oy -= h / 2;
+    else if (vert == 2) oy -= h;
+
+    int32_t cur_x = ox;
+    size_t i = 0;
+    while (i < (size_t)s.length()) {
+        uint32_t cp = _arduino_string_codepoint_at(s, i);
+        glyph(_font, cp, cur_x, oy);
     }
     _dirty = true;
 }
+
 void LVGLCanvas::drawString(const String &s, int32_t x, int32_t y, uint16_t c) {
     uint16_t save = _fg; _fg = c; drawString(s, x, y); _fg = save;
 }
 void LVGLCanvas::drawCenterString(const String &s, int32_t x, int32_t y) {
-    uint8_t save = _datum; _datum = 2; drawString(s, x, y); _datum = save;
+    uint8_t save = _datum; _datum = 1; drawString(s, x, y); _datum = save; // TC_DATUM (Top Center)
 }
 void LVGLCanvas::drawCenterString(const String &s, int32_t x, int32_t y, uint16_t c) {
-    uint8_t save = _datum; _datum = 2; drawString(s, x, y, c); _datum = save;
+    uint8_t save = _datum; _datum = 1; drawString(s, x, y, c); _datum = save;
 }
 void LVGLCanvas::drawRightString(const String &s, int32_t x, int32_t y) {
-    uint8_t save = _datum; _datum = 8; drawString(s, x, y); _datum = save;
+    uint8_t save = _datum; _datum = 2; drawString(s, x, y); _datum = save; // TR_DATUM (Top Right)
 }
 void LVGLCanvas::drawRightString(const String &s, int32_t x, int32_t y, uint16_t c) {
-    uint8_t save = _datum; _datum = 8; drawString(s, x, y, c); _datum = save;
+    uint8_t save = _datum; _datum = 2; drawString(s, x, y, c); _datum = save;
 }
 
-// ---- GT911 -> LVGL indev (11a218d: track reg is 0x814F, not 0x814E) ----
+// ---- GT911 Capacitive Touch (I2C 0x5D/0x14, INT on GPIO4, reset on EXIO1) ----
 
-#define GT911_REG_POINT_STAT 0x814F
+#define GT911_REG_STATUS 0x814E
+#define GT911_REG_TRACK1 0x814F
+
 static uint8_t gt911Addr = 0;
 static lv_indev_t *g_indev = nullptr;
+static int s_touchX = 0;
+static int s_touchY = 0;
+static bool s_isTouched = false;
 
-static void gt911_read(lv_indev_t *indev, lv_indev_data_t *data);
+static void gt911_lvgl_indev_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
+    (void)indev;
+    data->point.x = s_touchX;
+    data->point.y = s_touchY;
+    data->state = s_isTouched ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+}
 
 void displayTouchInit() {
-    // EXIO1 reset pulse (11a218d): the INT level during reset latches the
-    // 0x5D/0x14 addr pin. Without this pulse the GT911 never answers I2C.
+    // Hardware reset pulse via CH422G EXIO1.
+    // Driving GPIO 4 (INT) LOW during reset release latches I2C address to 0x5D.
     extern void ch422gSetPin(uint8_t, bool);
-    ch422gSetPin(1, false);   // EXIO1 = TP_RST
+    pinMode(4, OUTPUT);
+    digitalWrite(4, LOW);
+    ch422gSetPin(1, false);   // EXIO1 = TP_RST low
     delay(20);
-    ch422gSetPin(1, true);
-    delay(100);
+    ch422gSetPin(1, true);    // EXIO1 = TP_RST high
+    delay(50);
+    pinMode(4, INPUT);        // Release INT pin back to input
+    delay(50);
 
-    Wire.beginTransmission(0x5D);
-    Wire.write(GT911_REG_POINT_STAT >> 8); Wire.write(GT911_REG_POINT_STAT & 0xFF);
-    if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint8_t)0x5D, (uint8_t)1) == 1) {
-        Wire.read(); gt911Addr = 0x5D; Wire.read();
-        Serial.printf("[TOUCH] GT911 online at 0x%02X (INT: GPIO4)\n", gt911Addr);
-    } else {
-        Serial.println("[TOUCH] No GT911 found — touch disabled.");
+    const uint8_t candidates[2] = {0x5D, 0x14};
+    gt911Addr = 0;
+    for (uint8_t addr : candidates) {
+        Wire.beginTransmission(addr);
+        Wire.write((uint8_t)(GT911_REG_STATUS >> 8));
+        Wire.write((uint8_t)(GT911_REG_STATUS & 0xFF));
+        if (Wire.endTransmission(false) == 0 && Wire.requestFrom(addr, (uint8_t)1) == 1) {
+            Wire.read();
+            gt911Addr = addr;
+            Serial.printf("[TOUCH] GT911 online at 0x%02X (INT: GPIO4)\n", gt911Addr);
+            break;
+        }
+    }
+
+    if (!gt911Addr) {
+        Serial.println("[TOUCH] No GT911 found at 0x5D or 0x14 — touch disabled.");
+        return;
+    }
+
+    if (!g_indev) {
+        g_indev = lv_indev_create();
+        lv_indev_set_type(g_indev, LV_INDEV_TYPE_POINTER);
+        lv_indev_set_read_cb(g_indev, gt911_lvgl_indev_read_cb);
     }
 }
 
-static void gt911_read(lv_indev_t *indev, lv_indev_data_t *data) {
-    (void)indev;
-    if (!gt911Addr) { data->state = LV_INDEV_STATE_RELEASED; return; }
+bool displayTouchRead(int &x, int &y) {
+    x = s_touchX;
+    y = s_touchY;
+    if (!gt911Addr) return false;
 
-    static int sx = 0, sy = 0;
-    static bool down = false;
-
+    // Read Touch Status register (0x814E)
     Wire.beginTransmission(gt911Addr);
-    Wire.write(GT911_REG_POINT_STAT >> 8); Wire.write(GT911_REG_POINT_STAT & 0xFF);
-    bool ok = Wire.endTransmission(false) == 0 && Wire.requestFrom(gt911Addr, (uint8_t)1) == 1;
-    if (!ok) { data->state = LV_INDEV_STATE_RELEASED; return; }
+    Wire.write((uint8_t)(GT911_REG_STATUS >> 8));
+    Wire.write((uint8_t)(GT911_REG_STATUS & 0xFF));
+    if (Wire.endTransmission(false) != 0 || Wire.requestFrom(gt911Addr, (uint8_t)1) != 1) {
+        return s_isTouched;
+    }
 
     uint8_t status = Wire.read();
+    // Bit 7: Buffer status (1 = new touch data ready, 0 = reading / not ready)
     if (!(status & 0x80)) {
-        data->state = down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-        data->point.x = sx; data->point.y = sy;
-        return;
+        return s_isTouched;
     }
 
     uint8_t count = status & 0x0F;
     if (count == 0 || count > 5) {
+        // Finger lifted or invalid count: clear buffer-ready flag and update state
         Wire.beginTransmission(gt911Addr);
-        Wire.write(GT911_REG_POINT_STAT >> 8); Wire.write(GT911_REG_POINT_STAT & 0xFF);
-        Wire.write(0); Wire.endTransmission();
-        data->state = down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-        return;
+        Wire.write((uint8_t)(GT911_REG_STATUS >> 8));
+        Wire.write((uint8_t)(GT911_REG_STATUS & 0xFF));
+        Wire.write((uint8_t)0);
+        Wire.endTransmission();
+
+        s_isTouched = false;
+        return false;
     }
 
-    uint8_t pt[5] = {0};
+    // Point 1 track data: starts at 0x814F (Track ID), followed by
+    // 0x8150 (xL), 0x8151 (xH), 0x8152 (yL), 0x8153 (yH), 0x8154 (size)
     Wire.beginTransmission(gt911Addr);
-    Wire.write(0x8150 >> 8); Wire.write(0x8150 & 0xFF);
-    ok = Wire.endTransmission(false) == 0 && Wire.requestFrom(gt911Addr, (uint8_t)5) == 5;
-    if (ok) for (int i = 0; i < 5; i++) pt[i] = Wire.read();
+    Wire.write((uint8_t)(GT911_REG_TRACK1 >> 8));
+    Wire.write((uint8_t)(GT911_REG_TRACK1 & 0xFF));
+    bool ok = (Wire.endTransmission(false) == 0 && Wire.requestFrom(gt911Addr, (uint8_t)6) == 6);
+    uint8_t pt[6] = {0};
+    if (ok) {
+        for (int i = 0; i < 6; i++) pt[i] = Wire.read();
+    }
 
+    // Clear buffer-ready flag so controller updates again
     Wire.beginTransmission(gt911Addr);
-    Wire.write(GT911_REG_POINT_STAT >> 8); Wire.write(GT911_REG_POINT_STAT & 0xFF);
-    Wire.write(0); Wire.endTransmission();
-    if (!ok) { data->state = down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED; return; }
+    Wire.write((uint8_t)(GT911_REG_STATUS >> 8));
+    Wire.write((uint8_t)(GT911_REG_STATUS & 0xFF));
+    Wire.write((uint8_t)0);
+    Wire.endTransmission();
 
-    int rx = pt[1] | (pt[2] << 8);
-    int ry = pt[3] | (pt[4] << 8);
-    if (rx > 799) rx = 799;
-    if (ry > 479) ry = 479;
+    if (!ok) {
+        return s_isTouched;
+    }
 
-    int fx = rx, fy = ry;
-    if (canvas.flip()) { fx = 799 - rx; fy = 479 - ry; }
-    sx = fx; sy = fy; down = true;
-    data->state = LV_INDEV_STATE_PRESSED;
-    data->point.x = sx;
-    data->point.y = sy;
+    int rawX = pt[1] | (pt[2] << 8);
+    int rawY = pt[3] | (pt[4] << 8);
+    if (rawX > 799) rawX = 799;
+    if (rawY > 479) rawY = 479;
+    if (rawX < 0) rawX = 0;
+    if (rawY < 0) rawY = 0;
+
+    int fx = rawX, fy = rawY;
+    if (canvas.flip()) {
+        fx = 799 - rawX;
+        fy = 479 - rawY;
+    }
+
+    s_touchX = fx;
+    s_touchY = fy;
+    s_isTouched = true;
+    x = s_touchX;
+    y = s_touchY;
+    return true;
 }
 
-bool displayTouchRead(int &x, int &y) {
-    x = 0; y = 0;
-    if (!gt911Addr) return false;
-    if (!g_indev) {
-        g_indev = lv_indev_create();
-        lv_indev_set_type(g_indev, LV_INDEV_TYPE_POINTER);
-        lv_indev_set_read_cb(g_indev, gt911_read);
-        lv_indev_set_group(g_indev, lv_group_create());
-    }
-    lv_indev_read(g_indev);
-    static lv_point_t last_pt = {};
-    lv_indev_get_point(g_indev, &last_pt);
-    x = (int)last_pt.x; y = (int)last_pt.y;
-    return lv_indev_get_state(g_indev) == LV_INDEV_STATE_PRESSED;
+uint8_t displayTouchGetAddr() {
+    return gt911Addr;
 }

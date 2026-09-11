@@ -11,5 +11,5 @@ void fontsInit() {
     fonts::Font0 = &lv_font_montserrat_8;
     fonts::Font2 = &lv_font_montserrat_14;
     fonts::Font4 = &lv_font_montserrat_20;
-    fonts::Font7 = &lv_font_montserrat_28;
+    fonts::Font7 = &lv_font_montserrat_48;
 }

@@ -20,7 +20,9 @@
 #define LV_FONT_MONTSERRAT_8   1
 #define LV_FONT_MONTSERRAT_14  1
 #define LV_FONT_MONTSERRAT_20  1
+#define LV_FONT_MONTSERRAT_24  1
 #define LV_FONT_MONTSERRAT_28  1
+#define LV_FONT_MONTSERRAT_48  1
 
 #define LV_USE_LODEPNG          0   // no image decoders left: splash is canvas-drawn
 

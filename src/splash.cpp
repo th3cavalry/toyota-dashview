@@ -9,19 +9,55 @@
 #include "splash.h"
 
 bool drawToyotaBootSplash(LVGLCanvas& canvas) {
-    canvas.fillScreen(canvas.color565(13, 17, 23));      // C_DARK_BG
+    // Deep Jet Black Background
+    canvas.fillScreen(canvas.color565(10, 12, 16));
 
-    // TRD-red accent bar across the top, 4 px into the header band.
-    canvas.fillRect(0, 0, 800, 4, canvas.color565(204, 0, 38));
+    // TRD Motorsport Heritage Tri-Color Banner (Top Bar)
+    canvas.fillRect(0, 0, 266, 6, canvas.color565(245, 130, 32)); // TRD Orange
+    canvas.fillRect(266, 0, 268, 6, canvas.color565(235, 10, 30));  // TRD Red
+    canvas.fillRect(534, 0, 266, 6, canvas.color565(150, 15, 25)); // TRD Burgundy
 
-    canvas.setFont(fonts::Font7);                       // Montserrat 28
-    canvas.setTextDatum(4);                             // ML_CENTER
+    // Center TRD Heritage Tri-Color Accent Pill
+    int badgeY = 85;
+    canvas.fillRoundRect(345, badgeY, 30, 8, 4, canvas.color565(245, 130, 32)); // Orange
+    canvas.fillRoundRect(385, badgeY, 30, 8, 4, canvas.color565(235, 10, 30));  // Red
+    canvas.fillRoundRect(425, badgeY, 30, 8, 4, canvas.color565(150, 15, 25)); // Burgundy
+
+    // Main Title: Bold 48px "DASHVIEW"
+    canvas.setFont(fonts::Font7);                       // Montserrat 48
+    canvas.setTextDatum(1);                             // Top-Center
     canvas.setTextColor(canvas.color565(255, 255, 255));
-    canvas.drawString("DashView", 400, 240);            // dead center of 800x480
+    canvas.drawString("DASHVIEW", 400, 120);
+
+    // Subtitle in TRD Orange
+    canvas.setFont(fonts::Font4);                       // Montserrat 20
+    canvas.setTextColor(canvas.color565(245, 130, 32)); // Heritage Orange
+    canvas.drawString("TOYOTA MOTORSPORT TELEMETRY", 400, 195);
+
+    // Active Profile Box
+    int boxW = 380;
+    int boxH = 54;
+    int boxX = 400 - boxW / 2;
+    int boxY = 245;
+    canvas.fillRoundRect(boxX, boxY, boxW, boxH, 8, canvas.color565(18, 22, 30));
+    canvas.drawRoundRect(boxX, boxY, boxW, boxH, 8, canvas.color565(40, 48, 65));
+    canvas.fillRect(boxX + 2, boxY + 2, 6, boxH - 4, canvas.color565(40, 220, 100));
 
     canvas.setFont(fonts::Font2);                       // Montserrat 14
-    canvas.setTextColor(canvas.color565(110, 116, 130));
-    canvas.drawString("Toyota Tacoma", 400, 300);       // sub-line
+    canvas.setTextColor(canvas.color565(130, 140, 160));
+    canvas.drawString("SYSTEM ACTIVE", 400, boxY + 8);
+    canvas.setTextColor(canvas.color565(40, 220, 100)); // Nominal Green
+    canvas.drawString("TACOMA 3RD GEN TELEMETRY", 400, boxY + 30);
+
+    // "TAP TO START" prompt
+    canvas.setFont(fonts::Font2);
+    canvas.setTextColor(canvas.color565(0, 220, 255));   // Ice Cyan
+    canvas.drawString("< TAP ANYWHERE TO START >", 400, 360);
+
+    // Version Footer
+    canvas.setFont(fonts::Font0);                       // Montserrat 8
+    canvas.setTextColor(canvas.color565(90, 100, 120));
+    canvas.drawString("DashView (ESP32-S3 Touch LCD 4.3B 800x480)", 400, 440);
 
     canvas.markDirty();
     return true;

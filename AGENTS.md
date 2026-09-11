@@ -55,12 +55,20 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
   table (now requires `signals` or `inherits`).
 - [x] Waveshare 4.3B migration (PR#2 lineage): ISO-TP, bus-off recovery, NVS
   file counter, CH422G expander, GT911 touch, PCF85063 RTC, TRD UI.
-- [x] **Hardware Flash & Boot Verified (2026-09-05)**: Successfully flashed to
+- [x] **Hardware Flash & Boot Verified (2026-09-05 / 2026-09-11)**: Successfully flashed to
   physical Waveshare 4.3B hardware via `/dev/ttyACM0`. Verified live boot log:
   CH422G IO expander OK, 800x480 PSRAM framebuffer OK, GT911 touch OK, PCF85063
   RTC OK, TWAI CAN initialized (TX:15, RX:16 @ 500k), Wi-Fi AP + SavvyCAN server live,
   Profile engine active (`toyota_tacoma_2016_2023`).
-- Build: `pio run` SUCCESS — RAM 20.2% (66 KB), Flash 35.9% (1.13 MB / 3 MB).
+- [x] **GT911 Capacitive Touch & Display Rendering Overhaul (2026-09-11)**:
+  - Fixed GT911 register definition: `GT911_REG_STATUS` restored to 0x814E (bit 7 buffer status) and `GT911_REG_TRACK1` to 0x814F (point 1 track ID + coordinates at 0x8150-0x8153). Probe addresses 0x5D/0x14 with GPIO4 INT low latch.
+  - Eliminated I2C contention between LVGL indev callback and `pollTouch()`. Synchronous point reads now properly clear the 0x814E status register and propagate coordinates safely.
+  - Fixed text font rendering: resolved row stride mismatches via per-glyph dynamic `lv_draw_buf_width_to_stride()`, exact LVGL baseline positioning `pos->y + (line_height - base_line) - box_h - ofs_y`, and font space advance widths.
+  - Added 16-bit RGB565 alpha blending (`px_blend`) over the framebuffer for clean anti-aliased Montserrat typography.
+  - Corrected TFT/LovyanGFX horizontal and vertical datum alignment math (`_datum % 3` and `_datum / 3`) across all string drawing functions.
+  - Enabled Montserrat 48 (`Font7`) for bold, clear hero gear gauges and redesigned OEM TRD Motorsport boot splash.
+  - Replaced crude single-pixel corners in `drawRoundRect` and `fillRoundRect` with proper midpoint circle arc helper algorithms.
+- Build: `pio run` SUCCESS — RAM 37.6% (123 KB), Flash 21.9% (1.43 MB / 6.5 MB). Native tests 46/46 passed.
 
 ## IN PROGRESS
 

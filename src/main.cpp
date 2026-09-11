@@ -2591,6 +2591,22 @@ void setup() {
 }
 
 void loop() {
+    if (Serial.available()) {
+        char cmd = (char)Serial.read();
+        if (cmd == 'r') {
+            Serial.println("[SYSTEM] Soft rebooting...");
+            delay(100);
+            ESP.restart();
+        } else if (cmd == 't') {
+            int tx = 0, ty = 0;
+            bool touched = pollTouch(tx, ty);
+            Serial.printf("[TOUCH-DEBUG] addr=0x%02X touched=%d at (%d, %d)\n", displayTouchGetAddr(), touched, tx, ty);
+        } else if (cmd == 's') {
+            Serial.printf("[STATUS] Screen=%d PPS=%.1f Heap=%u PSRAM=%u\n",
+                          currentScreen, currentPPS, ESP.getFreeHeap(), ESP.getFreePsram());
+        }
+    }
+
     if (isBootSplashActive) {
         handleWiFiClients();
         processCAN();
