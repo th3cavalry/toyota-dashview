@@ -25,14 +25,13 @@ bool drawToyotaBootSplash(LVGLCanvas& canvas) {
 
     // Main Title: Bold 48px "DASHVIEW"
     canvas.setFont(fonts::Font7);                       // Montserrat 48
-    canvas.setTextDatum(1);                             // Top-Center
     canvas.setTextColor(canvas.color565(255, 255, 255));
-    canvas.drawString("DASHVIEW", 400, 120);
+    canvas.drawCenterString("DASHVIEW", 400, 120);
 
     // Subtitle in TRD Orange
     canvas.setFont(fonts::Font4);                       // Montserrat 20
     canvas.setTextColor(canvas.color565(245, 130, 32)); // Heritage Orange
-    canvas.drawString("TOYOTA MOTORSPORT TELEMETRY", 400, 195);
+    canvas.drawCenterString("TOYOTA MOTORSPORT TELEMETRY", 400, 195);
 
     // Active Profile Box
     int boxW = 380;
@@ -45,20 +44,21 @@ bool drawToyotaBootSplash(LVGLCanvas& canvas) {
 
     canvas.setFont(fonts::Font2);                       // Montserrat 14
     canvas.setTextColor(canvas.color565(130, 140, 160));
-    canvas.drawString("SYSTEM ACTIVE", 400, boxY + 8);
+    canvas.drawCenterString("SYSTEM ACTIVE", 400, boxY + 8);
     canvas.setTextColor(canvas.color565(40, 220, 100)); // Nominal Green
-    canvas.drawString("TACOMA 3RD GEN TELEMETRY", 400, boxY + 30);
+    canvas.drawCenterString("TACOMA 3RD GEN TELEMETRY", 400, boxY + 30);
 
     // "TAP TO START" prompt
     canvas.setFont(fonts::Font2);
     canvas.setTextColor(canvas.color565(0, 220, 255));   // Ice Cyan
-    canvas.drawString("< TAP ANYWHERE TO START >", 400, 360);
+    canvas.drawCenterString("< TAP ANYWHERE TO START >", 400, 360);
 
     // Version Footer
     canvas.setFont(fonts::Font0);                       // Montserrat 8
     canvas.setTextColor(canvas.color565(90, 100, 120));
-    canvas.drawString("DashView (ESP32-S3 Touch LCD 4.3B 800x480)", 400, 440);
+    canvas.drawCenterString("DashView (ESP32-S3 Touch LCD 4.3B 800x480)", 400, 440);
 
+    canvas.setTextDatum(0); // Reset to standard top-left datum
     canvas.markDirty();
     return true;
 }

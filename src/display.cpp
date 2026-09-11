@@ -216,6 +216,7 @@ void LVGLCanvas::setTextPadding(uint16_t p) { _pad = p; }
 
 void LVGLCanvas::fillScreen(uint16_t c) {
     if (!_fb) return;
+    _datum = 0;
     uint32_t c32 = ((uint32_t)c << 16) | c;
     uint32_t *p32 = (uint32_t *)_fb;
     size_t count = ((size_t)_fbw * _fbh) / 2;

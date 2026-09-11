@@ -330,16 +330,16 @@ static void cdDrawGauge(const CdGauge& g, int slotIdx = -1, bool force = false) 
     }
 }
 
-// Customize pill (top-right of content strip, normal mode only)
-#define CD_BTN_CUST_X 664
-#define CD_BTN_CUST_Y 52
+// Customize pill (positioned cleanly in header bar, normal mode only)
+#define CD_BTN_CUST_X 400
+#define CD_BTN_CUST_Y 7
 #define CD_BTN_CUST_W 124
-#define CD_BTN_CUST_H 24
+#define CD_BTN_CUST_H 30
 static void cdDrawCustomizePill() {
-    canvas.fillRoundRect(CD_BTN_CUST_X, CD_BTN_CUST_Y, CD_BTN_CUST_W, CD_BTN_CUST_H, 4, canvas.color565(25, 35, 52));
-    canvas.drawRoundRect(CD_BTN_CUST_X, CD_BTN_CUST_Y, CD_BTN_CUST_W, CD_BTN_CUST_H, 4, canvas.color565(60, 100, 160));
+    canvas.fillRoundRect(CD_BTN_CUST_X, CD_BTN_CUST_Y, CD_BTN_CUST_W, CD_BTN_CUST_H, 5, canvas.color565(25, 35, 52));
+    canvas.drawRoundRect(CD_BTN_CUST_X, CD_BTN_CUST_Y, CD_BTN_CUST_W, CD_BTN_CUST_H, 5, canvas.color565(60, 100, 160));
     canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(fonts::Font2);
-    canvas.drawCenterString("CUSTOMIZE", CD_BTN_CUST_X + CD_BTN_CUST_W / 2, CD_BTN_CUST_Y + 4);
+    canvas.drawCenterString("CUSTOMIZE", CD_BTN_CUST_X + CD_BTN_CUST_W / 2, CD_BTN_CUST_Y + 7);
 }
 
 void renderCustomDash(bool forceFull) {

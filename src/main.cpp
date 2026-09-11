@@ -1003,6 +1003,7 @@ void drawBottomNavBar();
 // =========================================================================
 
 void drawHeaderBar(const char* title, bool forceFull) {
+    canvas.setTextDatum(0);
     if (forceFull) {
         // Deep dark header bar background
         canvas.fillRect(0, 0, UI_W, UI_HEADER_H, canvas.color565(12, 15, 22));
@@ -1222,7 +1223,7 @@ void renderDashboard(bool forceFull = false) {
 
         canvas.setFont(fonts::Font2);
         canvas.setTextColor(C_TEXT_MUTED);
-        canvas.drawString("AIR-FUEL RATIO", ax + 12, ay + 10);
+        canvas.drawCenterString("AIR-FUEL RATIO", ax + aw / 2, ay + 10);
 
         // Column 1: Commanded Target AFR (w=118, h=72)
         int c1x = ax + 10, c1y = ay + 34, cw = 118, ch = 72;
@@ -1293,7 +1294,7 @@ void renderDashboard(bool forceFull = false) {
 
         canvas.setFont(fonts::Font2);
         canvas.setTextColor(C_TEXT_MUTED);
-        canvas.drawString("KNOCK HEALTH", kx + 12, ky + 10);
+        canvas.drawCenterString("KNOCK HEALTH", kx + kw / 2, ky + 10);
 
         // Column 1: KCLV Learned Octane Value (w=108, h=72)
         int c1x = kx + 10, c1y = ky + 34, cw = 108, ch = 72;
@@ -2815,6 +2816,72 @@ void loop() {
         } else if (cmd == 's') {
             Serial.printf("[STATUS] Screen=%d PPS=%.1f Heap=%lu PSRAM=%lu\n",
                           currentScreen, currentPPS, (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getFreePsram());
+        } else if (cmd == 'c' || cmd == 'C') {
+            uint8_t* fb = canvas.frameBuffer();
+            if (fb) {
+                Serial.println("\n---SCREENSHOT:START:800:480:RGB565---");
+                Serial.flush();
+                const size_t total = 800 * 480 * 2;
+                const size_t chunk = 4096;
+                for (size_t i = 0; i < total; i += chunk) {
+                    size_t toWrite = total - i;
+                    if (toWrite > chunk) toWrite = chunk;
+                    Serial.write(fb + i, toWrite);
+                    delayMicroseconds(50);
+                }
+                Serial.flush();
+                Serial.println("\n---SCREENSHOT:END---");
+            } else {
+                Serial.println("\n---SCREENSHOT:ERROR:NO_FB---");
+            }
+        } else if (cmd >= '0' && cmd <= '6') {
+            currentScreen = (DisplayScreen)(cmd - '0');
+            isBootSplashActive = false;
+            wakeScreen();
+            lastUserActivityTime = millis();
+            updateDisplay();
+            Serial.printf("[SCREEN] Switched to screen %d\n", currentScreen);
+        } else if (cmd == 'm') {
+            vehicleData.rpm = 2450;
+            vehicleData.speedMph = 45;
+            strcpy(vehicleData.gear, "4");
+            vehicleData.tccLocked = true;
+            vehicleData.commandedAfr = 14.7f;
+            vehicleData.actualAfr = 14.65f;
+            vehicleData.kclv = 20.0f;
+            vehicleData.knockFB = 0.0f;
+            vehicleData.throttlePct = 32;
+            vehicleData.engineLoadPct = 48;
+            vehicleData.coolantTempC = 88;
+            vehicleData.iatC = 26;
+            vehicleData.mafGps = 22.4f;
+            vehicleData.timingDeg = 16.0f;
+            currentPPS = 185.0f;
+            packetCount = 84210;
+            wakeScreen();
+            lastUserActivityTime = millis();
+            updateDisplay();
+            Serial.println("[MOCK] Injected active driving telemetry");
+        } else if (cmd == 'z') {
+            vehicleData.rpm = 0;
+            vehicleData.speedMph = 0;
+            strcpy(vehicleData.gear, "P");
+            vehicleData.tccLocked = false;
+            vehicleData.commandedAfr = 14.7f;
+            vehicleData.actualAfr = 14.7f;
+            vehicleData.kclv = 20.0f;
+            vehicleData.knockFB = 0.0f;
+            vehicleData.throttlePct = 0;
+            vehicleData.engineLoadPct = 0;
+            vehicleData.coolantTempC = 88;
+            vehicleData.iatC = 25;
+            vehicleData.mafGps = 0.0f;
+            vehicleData.timingDeg = 10.0f;
+            currentPPS = 0.0f;
+            wakeScreen();
+            lastUserActivityTime = millis();
+            updateDisplay();
+            Serial.println("[MOCK] Cleared telemetry to idle");
         }
     }
 
