@@ -1,14 +1,16 @@
+// =========================================================================
+// LVGL 9 UI shell (S2+): the custom UI as real widgets. The 7 pages live in
+// one horizontal scroll-snap strip; header + nav bars are widgets, the custom
+// dash is real LVGL objects. The headless engine keeps its API surface and
+// reads/writes the accessors below; telemetry lands via syncProfileSignals().
+//
+// Engine -> UI wiring points (main.cpp): uiInit() once at boot; uiUpdate()
+// after syncProfileSignals() at the 30 FPS cadence; nextScreen()/prevScreen()
+// replace the monolith nav; uiScreenChanged(s) on every page change.
+// =========================================================================
 #pragma once
 #include <Arduino.h>
 #include <lvgl.h>
-
-// =========================================================================
-// LVGL 9 UI shell (S2+). The custom-UI monolith moves off the canvas shim
-// onto real LVGL widgets: the tabview owns the 7 pages, the header bar and
-// bottom nav bar become widgets, and the same geometry + TRD palette
-// survive as lv_obj trees. The headless engine (CAN, OBD, datalogger,
-// Wi-Fi, SD, RTC) keeps the API surface below and reads via the setters.
-// =========================================================================
 
 // ---- Live telemetry the engine feeds every loop ----
 struct TacomaTelemetry {
@@ -42,13 +44,15 @@ enum DisplayScreen {
 };
 extern DisplayScreen currentScreen;
 
-extern bool isDisplayFlipped;   // persistent: false = normal, true = 180 flip
+extern bool isDisplayFlipped;   // persistent: false = normal, true: 180 flip
 extern bool backlightEnabled;   // persistent: CH422G backlight line
+extern bool isPidConfigOpen;         // PID picker modal open
+extern bool isRawSnifferModalOpen;   // raw packet terminal modal open
 
 // ---- TRD palette (16-bit 565) ----
 #define C_DARK_BG     0x0861   // #0a0e1a-ish dark bg
 #define C_CARD_BG     0x18E3  // card fill
-#define C_CARD_INNER  0x2124  // inner card inner rect (darker card)
+#define C_CARD_INNER  0x2124  // card inner rect (darker card)
 #define C_CARD_BORDER 0x4224  // card outline gray-blue
 #define C_TRD_RED     0x8A20  // TRD red accent
 #define C_TRD_ORANGE  0xFD20
@@ -61,33 +65,25 @@ extern bool backlightEnabled;   // persistent: CH422G backlight line
 #define TFT_BLACK     0x0000
 extern const uint16_t NAV_BG, NAV_DOT, CARD_BORDER_C;
 
-// ---- Shared telemetry accessors ----
-void syncProfileSignals();   // profile engine -> vehicleData
-void syncCustomDash();       // custom-dash gauges -> LVGL widgets
-
 // ---- Engine -> UI ----
 void uiInit();                          // build the widget tree once (after displayInit)
 void uiUpdate();                        // push fresh telemetry into widgets
-
-// ---- UI -> engine ----
-void uiNextScreen();                    // next tab (wraps)
-void uiPrevScreen();                    // prev page, clamped
+void uiNextScreen();                    // next page (wraps)
+void uiPrevScreen();                    // prev page, wraps
 void uiScreenChanged(DisplayScreen s);  // called on tab change
 
-// ---- Profile engine (unchanged headless engine) ----
-void syncProfileSignals();   // defined in profile.cpp
+// ---- Profile engine (unchanged headless engine; profile.cpp) ----
 int  getSignalCount();
 
-// ---- Custom-dash module (LVGL widget port of the monolith module) ----
+// ---- Custom-dash module (LVGL port of the monolith module) ----
 void cdInit();         // load prefs + build the page-2 tab page once
-void cdUpdate();       // refresh gauge widgets from engine
+void cdUpdate();       // refresh gauge widgets from engine accessors
 void cdAppendQueries(uint8_t modes[], uint8_t pids[], int& count, int cap);
-void cdLoadPrefs();    // (kept for engine-call compat; no-ops)
-void cdSavePrefs();    // persist the gauges
 
 // ---- Splash ----
 void splashInit();       // TRD logo splash as LVGL overlay
 void splashDismiss();  // tap-to-dismiss -> dashboard
 
-// ---- LVGL input device touch read (display.cpp) ----
-bool displayTouchRead(int& x, int& y);  // GT911 -> LVGL indev read cb
+// ---- Touch: legacy gesture engine (display.cpp GT911 read cb) ----
+bool pollTouch(int& x, int& y);   // GT911 -> LVGL indev read cb
+void handleTouch();                     // monolith gesture engine -> nextScreen/prevScreen

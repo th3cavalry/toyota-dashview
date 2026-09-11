@@ -395,6 +395,14 @@ static lv_indev_t *g_indev = nullptr;
 static void gt911_read(lv_indev_t *indev, lv_indev_data_t *data);
 
 void displayTouchInit() {
+    // EXIO1 reset pulse (11a218d): the INT level during reset latches the
+    // 0x5D/0x14 addr pin. Without this pulse the GT911 never answers I2C.
+    extern void ch422gSetPin(uint8_t, bool);
+    ch422gSetPin(1, false);   // EXIO1 = TP_RST
+    delay(20);
+    ch422gSetPin(1, true);
+    delay(100);
+
     Wire.beginTransmission(0x5D);
     Wire.write(GT911_REG_POINT_STAT >> 8); Wire.write(GT911_REG_POINT_STAT & 0xFF);
     if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint8_t)0x5D, (uint8_t)1) == 1) {

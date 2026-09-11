@@ -11,11 +11,11 @@
 #include "display.h"       // LVGL 9 render core (replaces LovyanGFX)
 #include "fonts.h"         // fonts::Font0/2/4/7 -> LVGL Montserrat
 #include "splash.h"        // DashView boot splash (canvas-drawn, no PNG decode)
+#include "ui.h"            // LVGL UI shell (S2): globals defined in ui.cpp
 
 // Persistent Settings (Flash NVS)
 Preferences preferences;
-bool isDisplayFlipped = false; // Persistent: false = normal, true = 180 deg (software push)
-bool backlightEnabled = true;  // Persistent: CH422G digital backlight (no PWM on 4.3B)
+// isDisplayFlipped / backlightEnabled now live in ui.cpp (S2)
 
 // Forward decls (defined with the CH422G / display sections below)
 void backlightOn();
@@ -100,7 +100,7 @@ DatalogPid availablePids[] = {
 };
 #define PID_COUNT (sizeof(availablePids) / sizeof(availablePids[0]))
 
-bool isPidConfigOpen = false;        // Is the PID selection modal/view open
+// isPidConfigOpen defined in ui.cpp (S2)
 
 // ---- Datalog selection by PROFILE SIGNAL KEY (NVS: "dl_set" + "dl_sel") ----
 // Datalog columns, polls, and the picker all follow the active vehicle
@@ -201,7 +201,7 @@ static bool dlLogThis(const char* key) {
     if (strcmp(g_dlSelProf, getProfileId()) != 0 && !dlSelAnyInProfile()) return true;
     return false;
 }
-bool isRawSnifferModalOpen = false;  // Is the floating raw packet terminal modal open
+// isRawSnifferModalOpen / isSnifferPaused / isBootSplashActive defined in ui.cpp (S2)
 bool isSnifferPaused = false;        // Freeze live frame view for inspection
 bool isBootSplashActive = true;      // Keep boot splash until screen tapped or engine starts (RPM > 0)
 
@@ -238,18 +238,7 @@ float currentPPS = 0;
 unsigned long lastPPSCheck = 0;
 unsigned long lastDisplayUpdate = 0;
 
-// 6 Dedicated Full-Color UI Screens
-enum DisplayScreen {
-    SCREEN_DASHBOARD = 0,
-    SCREEN_CUSTOM    = 1, // Fully user-customizable gauge dash
-    SCREEN_SNIFFER   = 2,
-    SCREEN_LOGGER    = 3, // Dedicated Datalog & CAN Logger Control Page
-    SCREEN_WIFI      = 4,
-    SCREEN_SYSTEM    = 5,
-    SCREEN_SETTINGS  = 6, // Settings & 180-deg Display Flip Page
-    SCREEN_COUNT     = 7
-};
-DisplayScreen currentScreen = SCREEN_DASHBOARD;
+// DisplayScreen enum + currentScreen now live in ui.h/ui.cpp (S2)
 
 // Swipe Gesture Detection State
 bool wasTouched = false;
@@ -259,23 +248,9 @@ int touchLastX = 0;
 int touchLastY = 0;
 unsigned long touchStartTime = 0;
 
-// Live Vehicle Telemetry
-struct TacomaTelemetry {
-    char gear[4] = "P";         // P, R, N, 1, 2, 3, 4, 5, 6
-    bool tccLocked = false;     // Torque Converter Lockup (TCC)
-    int rpm = 0;
-    int speedMph = 0;
-    float commandedAfr = 14.7f; // Target / Commanded AFR
-    float actualAfr = 14.7f;    // Live Wideband A/F Sensor AFR
-    float kclv = 20.0f;         // Knock Correct Learn Value
-    float knockFB = 0.0f;       // Knock Feedback (deg)
-    int throttlePct = 0;        // Throttle %
-    int engineLoadPct = 0;      // Calculated Engine Load %
-    int coolantTempC = 88;      // Coolant Temp °C
-    int iatC = 25;              // Intake Air Temp °C
-    float mafGps = 0.0f;        // MAF Airflow g/s
-    float timingDeg = 10.0f;    // Ignition Timing Advance deg
-} vehicleData;
+// Live Vehicle Telemetry — TacomaTelemetry + vehicleData now live in ui.h/ui.cpp (S2)
+
+// Ring buffer for CAN Sniffer View
 
 // Ring buffer for CAN Sniffer View
 struct RecentFrame {
@@ -969,8 +944,11 @@ bool rtcStamp(char* out, size_t len) {
 // GT911 Capacitive Touch (I2C 0x5D/0x14, INT on GPIO4, reset on EXIO1)
 // Coordinates are native panel pixels (0..799 x 0..479) — no transform.
 // =========================================================================
-#define GT911_REG_POINT_STAT 0x814E
-static uint8_t gt911Addr = 0;
+// =========================================================================
+// GT911 Capacitive Touch — init lives in display.cpp (11a218d: track reg is
+// 0x814F, not 0x814E). The old monolith block here died with the monolith:
+// old 0x814E track reg + no EXIO1 reset pulse (addr pin latched at boot).
+// =========================================================================
 
 void initGt911Touch() {
     // Reset pulse via the expander; INT state during reset latches the addr.
@@ -978,29 +956,8 @@ void initGt911Touch() {
     delay(20);
     ch422gSetPin(EXIO_TP_RST, true);
     delay(100);
-
-    const uint8_t candidates[2] = {0x5D, 0x14};
-    for (uint8_t addr : candidates) {
-        Wire.beginTransmission(addr);
-        Wire.write((uint8_t)(GT911_REG_POINT_STAT >> 8));
-        Wire.write((uint8_t)(GT911_REG_POINT_STAT & 0xFF));
-        if (Wire.endTransmission(false) == 0 && Wire.requestFrom(addr, (uint8_t)1) == 1) {
-            Wire.read(); // discard
-            gt911Addr = addr;
-            Serial.printf("[TOUCH] GT911 online at 0x%02X (INT: GPIO4)\n", addr);
-            return;
-        }
-    }
-    Serial.println("[TOUCH] No GT911 found at 0x5D/0x14 — touch disabled.");
+    displayTouchInit();
 }
-
-bool pollTouch(int &screenX, int &screenY) {
-    return displayTouchRead(screenX, screenY);
-}
-
-// =========================================================================
-// TRD Dark-Mode Motorsport UI Palette & Helper Macros
-// =========================================================================
 #define C_DARK_BG       canvas.color565(10, 12, 16)    // #0A0C10 Deep Jet Black
 #define C_CARD_BG       canvas.color565(18, 22, 30)    // #12161E Carbon Dark Card
 #define C_CARD_BORDER   canvas.color565(40, 48, 65)    // #283041 Subtle Card Border
