@@ -42,6 +42,8 @@ public:
     void drawCenterString(const String& s, int32_t x, int32_t y, uint16_t c);
     void drawRightString(const String& s, int32_t x, int32_t y);
     void drawRightString(const String& s, int32_t x, int32_t y, uint16_t c);
+    int32_t textWidth(const String& s) const { return textW(s); }
+    int32_t fontHeight() const { return textH(); }
     void setRotation(uint8_t r);
 
     lv_display_t* display() const { return _disp; }

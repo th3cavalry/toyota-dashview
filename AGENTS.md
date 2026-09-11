@@ -60,15 +60,16 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
   CH422G IO expander OK, 800x480 PSRAM framebuffer OK, GT911 touch OK, PCF85063
   RTC OK, TWAI CAN initialized (TX:15, RX:16 @ 500k), Wi-Fi AP + SavvyCAN server live,
   Profile engine active (`toyota_tacoma_2016_2023`).
-- [x] **GT911 Capacitive Touch & Display Rendering Overhaul (2026-09-11)**:
-  - Fixed GT911 register definition: `GT911_REG_STATUS` restored to 0x814E (bit 7 buffer status) and `GT911_REG_TRACK1` to 0x814F (point 1 track ID + coordinates at 0x8150-0x8153). Probe addresses 0x5D/0x14 with GPIO4 INT low latch.
-  - Eliminated I2C contention between LVGL indev callback and `pollTouch()`. Synchronous point reads now properly clear the 0x814E status register and propagate coordinates safely.
-  - Fixed text font rendering: resolved row stride mismatches via per-glyph dynamic `lv_draw_buf_width_to_stride()`, exact LVGL baseline positioning `pos->y + (line_height - base_line) - box_h - ofs_y`, and font space advance widths.
-  - Added 16-bit RGB565 alpha blending (`px_blend`) over the framebuffer for clean anti-aliased Montserrat typography.
-  - Corrected TFT/LovyanGFX horizontal and vertical datum alignment math (`_datum % 3` and `_datum / 3`) across all string drawing functions.
-  - Enabled Montserrat 48 (`Font7`) for bold, clear hero gear gauges and redesigned OEM TRD Motorsport boot splash.
-  - Replaced crude single-pixel corners in `drawRoundRect` and `fillRoundRect` with proper midpoint circle arc helper algorithms.
-- Build: `pio run` SUCCESS — RAM 37.6% (123 KB), Flash 21.9% (1.43 MB / 6.5 MB). Native tests 46/46 passed.
+- [x] **Production-Grade Visual Overhaul & Zero-Overlap Screen Redesign (2026-09-11)**:
+  - Added public `textWidth()` and `fontHeight()` methods to `LVGLCanvas` for accurate layout bounding.
+  - Added Montserrat 24 (`Font5`) and Montserrat 28 (`Font6`) to font subsystem for balanced automotive typographic hierarchy.
+  - Redesigned Header: TRD tri-color accent bar, Montserrat 20 screen title, recessed message-rate badge with live status dot, styled SD/REC status pill.
+  - Redesigned Bottom Nav: Sleek interactive `< PREV` and `NEXT >` pill buttons, centered active capsule and inactive dot page indicators.
+  - Cluster Dashboard (`renderDashboard`): Full-width recessed tachometer track (0-6000 RPM) with redline zone (5200-6000), graduated color bands (Cyan -> Orange -> Redline), tick marks, and prominent digital readout (`Font5`); balanced hero cards for Transmission (centered Font7 gear and Gold TCC lockup pill), AFR Wideband (target vs actual wells, lambda sub-metrics, and horizontal bar with 14.7 center pip), Knock Health (octane learning KCLV, retard wells, and dynamic status pill), mini throttle & load gauges with recessed tracks, and 4 inset status tiles (Wi-Fi, CAN frames, Free Heap/PSRAM, RTC).
+  - Cleaned up Secondary Screens: Standardized System screen rows (`rowStep = 44`) with row dividers to eliminate bottom edge clipping and fixed RTC partial update row target; Sniffer and Logger cards with inset metric wells and styled launcher buttons; Wi-Fi screen with inset status rows and structured help box; Custom Dash recessed hbar/vbar wells and Font5 readouts.
+  - Touch Alignment: Synchronized hitboxes in `handleTouch()` with cards and buttons across all screens.
+  - Build & Bench Verification: Clean compilation with 0 compiler warnings/errors (RAM 37.6%, Flash 23.0%), native tests 46/46 passed, flashed and verified on physical Waveshare 4.3B hardware via `/dev/ttyACM0`.
+- Build: `pio run` SUCCESS (0 warnings) — RAM 37.6% (123 KB), Flash 23.0% (1.50 MB / 6.5 MB). Native tests 46/46 passed.
 
 ## IN PROGRESS
 

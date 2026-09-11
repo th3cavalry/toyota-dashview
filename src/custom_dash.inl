@@ -121,8 +121,10 @@ static void cdCellRect(int cx, int cy, int cw, int ch, int& x, int& y, int& w, i
 static void cdPixelToCell(int px, int py, int& cx, int& cy) {
     cx = (px - CD_GRID_X) / CD_CELL_W;
     cy = (py - CD_GRID_Y) / CD_CELL_H;
-    if (cx < 0) cx = 0; if (cx >= CD_COLS) cx = CD_COLS - 1;
-    if (cy < 0) cy = 0; if (cy >= CD_ROWS) cy = CD_ROWS - 1;
+    if (cx < 0) cx = 0;
+    if (cx >= CD_COLS) cx = CD_COLS - 1;
+    if (cy < 0) cy = 0;
+    if (cy >= CD_ROWS) cy = CD_ROWS - 1;
 }
 // occupancy test: does any OTHER gauge overlap rect (x,y,w,h in cells)?
 static bool cdOverlap(int idx, int x, int y, int w, int h) {
@@ -296,7 +298,7 @@ static void cdDrawGauge(const CdGauge& g, int slotIdx = -1, bool force = false) 
     canvas.drawString(label, x + 8, y + 6);
 
     int valSize = (h > 70) ? 2 : ((h > 46) ? 1 : 0);
-    canvas.setFont(valSize == 2 ? fonts::Font4 : fonts::Font2);
+    canvas.setFont(valSize == 2 ? fonts::Font5 : fonts::Font2);
     canvas.setTextColor(valColor, bg);
 
     if (g.style == CD_STYLE_NUMBER || (g.style != CD_STYLE_NUMBER && h < 44)) {
@@ -304,22 +306,26 @@ static void cdDrawGauge(const CdGauge& g, int slotIdx = -1, bool force = false) 
     } else if (g.style == CD_STYLE_HBAR) {
         canvas.drawRightString(buf, x + w - 8, y + 6);
         int barX = x + 8, barY = y + h - 26, barW = w - 16, barH = 14;
-        canvas.drawRoundRect(barX, barY, barW, barH, 3, warn && flashOn ? TFT_BLACK : C_CARD_BORDER);
+        canvas.fillRoundRect(barX, barY, barW, barH, 4, C_CARD_INNER);
+        canvas.drawRoundRect(barX, barY, barW, barH, 4, warn && flashOn ? TFT_BLACK : C_CARD_BORDER);
         float frac = (g.maxVal > g.minVal) ? (v - g.minVal) / (g.maxVal - g.minVal) : 0;
-        if (frac < 0) frac = 0; if (frac > 1) frac = 1;
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
         int fillW = (int)(frac * (barW - 4));
         if (fillW > 0)
-            canvas.fillRect(barX + 2, barY + 2, fillW, barH - 4,
+            canvas.fillRoundRect(barX + 2, barY + 2, fillW, barH - 4, 2,
                             warn ? (flashOn ? TFT_BLACK : cdColor((CdColor)g.warnColor)) : C_TEXT_CYAN);
     } else { // VBAR
         canvas.drawCenterString(buf, x + w / 2, y + 6);
         int barX = x + 8, barY = y + 26, barW = 16, barH = h - 34;
-        canvas.drawRoundRect(barX, barY, barW, barH, 3, warn && flashOn ? TFT_BLACK : C_CARD_BORDER);
+        canvas.fillRoundRect(barX, barY, barW, barH, 4, C_CARD_INNER);
+        canvas.drawRoundRect(barX, barY, barW, barH, 4, warn && flashOn ? TFT_BLACK : C_CARD_BORDER);
         float frac = (g.maxVal > g.minVal) ? (v - g.minVal) / (g.maxVal - g.minVal) : 0;
-        if (frac < 0) frac = 0; if (frac > 1) frac = 1;
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
         int fillH = (int)(frac * (barH - 4));
         if (fillH > 0)
-            canvas.fillRect(barX + 2, barY + barH - 2 - fillH, barW - 4, fillH,
+            canvas.fillRoundRect(barX + 2, barY + barH - 2 - fillH, barW - 4, fillH, 2,
                             warn ? (flashOn ? TFT_BLACK : cdColor((CdColor)g.warnColor)) : C_TEXT_CYAN);
     }
 }
@@ -431,14 +437,14 @@ void renderCustomDashEditor() {
     canvas.fillRect(0, E_TOP, 800, 480 - E_TOP - 40, canvas.color565(14, 16, 22));
 
     if (g_cdEditorKind == CD_EDIT_ADD) {
-        char pbuf[48];
+        char pbuf[64];
         canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
         snprintf(pbuf, sizeof(pbuf), "Choose a parameter (page %d/%d):", g_cdPickerPage + 1,
                  (cdPickerTotal() + CD_PICKER_PER_PAGE - 1) / CD_PICKER_PER_PAGE);
         canvas.drawString(pbuf, 34, E_TOP + 12);
         int colW = 250, rowH = 46, sx = 12, sy = E_TOP + 44;
         for (int slot = 0; slot < CD_PICKER_PER_PAGE; slot++) {
-            int itemIdx; char lbl[26];
+            int itemIdx; char lbl[32];
             int kind = cdPickerItem(g_cdPickerPage * CD_PICKER_PER_PAGE + slot, itemIdx, lbl, sizeof(lbl));
             if (kind < 0) continue;
             int col = slot % 3, row = slot / 3;
@@ -613,7 +619,9 @@ static void cdEditorHit(int x, int y) {
     // warn high -/+ (0 toggles off)
     if (inRect(x, y, 160, e_rowY(2), 40, 40)) {
         if (g.warnHi <= -1e29f) g.warnHi = g.maxVal; else g.warnHi -= step;
-        if (g.warnHi <= g.minVal + step * 0.5f) g.warnHi = -1e30f; cdSavePrefs(); return;
+        if (g.warnHi <= g.minVal + step * 0.5f) g.warnHi = -1e30f;
+        cdSavePrefs();
+        return;
     }
     if (inRect(x, y, 460, e_rowY(2), 20, 40)) {
         if (g.warnHi <= -1e29f) g.warnHi = g.maxVal + step; else g.warnHi += step; cdSavePrefs(); return;
@@ -669,16 +677,20 @@ bool cdHandleDrag(int x, int y) {
     if (g_cdDragMode == 1) {
         int cx, cy; cdPixelToCell(x, y, cx, cy);
         int nx = cx - g_cdDragOffX, ny = cy - g_cdDragOffY;
-        if (nx < 0) nx = 0; if (nx + g.w > CD_COLS) nx = CD_COLS - g.w;
-        if (ny < 0) ny = 0; if (ny + g.h > CD_ROWS) ny = CD_ROWS - g.h;
+        if (nx < 0) nx = 0;
+        if (nx + g.w > CD_COLS) nx = CD_COLS - g.w;
+        if (ny < 0) ny = 0;
+        if (ny + g.h > CD_ROWS) ny = CD_ROWS - g.h;
         // only move to free space
         if (!cdOverlap(g_cdDragIdx, nx, ny, g.w, g.h)) { g.x = nx; g.y = ny; }
     } else if (g_cdDragMode == 2) {
         int cx, cy; cdPixelToCell(x + g_cdDragOffX, y + g_cdDragOffY, cx, cy);
         int nx = g.x, ny = g.y;
         int nw = (cx + 1) - g.x, nh = (cy + 1) - g.y;
-        if (nw < 1) nw = 1; if (nw > CD_COLS - g.x) nw = CD_COLS - g.x;
-        if (nh < 1) nh = 1; if (nh > CD_ROWS - g.y) nh = CD_ROWS - g.y;
+        if (nw < 1) nw = 1;
+        if (nw > CD_COLS - g.x) nw = CD_COLS - g.x;
+        if (nh < 1) nh = 1;
+        if (nh > CD_ROWS - g.y) nh = CD_ROWS - g.y;
         if (!cdOverlap(g_cdDragIdx, nx, ny, nw, nh)) { g.w = nw; g.h = nh; }
     }
     return true;
