@@ -3,24 +3,22 @@
 Write this file's sibling knowledge lives in `AGENTS.md` (project state) and
 `BENCH.md` (bring-up checklist). This file = bridge from the container session.
 
-Last updated: 2026-09-10, branch `feat/lvgl-port` (commit `82cd8a4`).
+Last updated: 2026-09-12, branch `feat/lvgl-port` (commit `b832bcf`).
 
-## Display Architecture & Hardware Status (2026-09-10 Update)
+## Display Architecture & Hardware Status (2026-09-12 Update)
 
 - **Display Panel & Direct Scanout**: The RGB LCD (800x480, ST7262) on the Waveshare 4.3B is driven via `esp_lcd_new_rgb_panel` with a direct PSRAM frame buffer (768 KB) using `num_fbs = 1`, `flags.fb_in_psram = 1`, `dma_burst_size = 64`, and `bounce_buffer_size_px = 0`.
 - **Pixel Clock Locked at 14 MHz**: `pclk_hz = 14000000`. **CRITICAL RULE**: Do NOT increase `pclk_hz` to 16 MHz. Under active Wi-Fi AP and CAN traffic, 16 MHz pulls pixels faster than GDMA can refill the internal FIFO over the Octal PSRAM bus, starving the scanout beam and shearing lines horizontally ("screen shaking side-to-side"). 14 MHz with standard ST7262 porches is rock solid.
+- **ST7262 PCLK Phase & Timing Flags Fixed (`9c39d25`)**: Set `pclk_active_neg = 1` and polarities `hsync_idle_low = 0`, `vsync_idle_low = 0`, `de_idle_high = 0`. The ST7262 panel samples data on the falling clock edge; this eliminated subtle letter shimmering and color fringing.
+- **CPU DCache Write-Back Synchronization (`8dc426b`)**: On ESP32-S3, PSRAM writes pass through a 32 KB write-back L1 DCache. Direct GDMA scanout (`bounce_buffer_size_px = 0`) reads physical external PSRAM directly via DMA/AXI, completely bypassing the CPU cache. Without cache sync, dirty cache lines remain in the CPU cache while GDMA scans out stale RAM, causing missing horizontal scanlines ("text cut off at top and middle") and "unpacking" delays. Added `esp_cache_msync()` with `ESP_CACHE_MSYNC_FLAG_DIR_C2M` in `endOffscreen()`, `endOffscreenRows()`, and steady-state `syncCache()`. Hardware text is now 100% crisp and solid.
 - **Cache Panic Eliminated**: Because `bounce_buffer_size_px` is 0, GDMA streams directly from Octal PSRAM using hardware bus-master DMA with NO CPU interrupt. SPI flash operations (Wi-Fi, NVS, SD) disabling the CPU DCache no longer trigger cache disabled ISR panics.
 - **DO NOT reintroduce bounce buffers or `no_fb` mode**: `no_fb` mode breaks `get_frame_buffer()`, and bounce buffers re-introduce the cache-disabled ISR panic.
-- **Flicker-Free Dirty-Rect Rendering**: In single-buffer direct PSRAM scanout, the beam scans the buffer continuously at ~33 Hz. Wiping the screen or header bar causes severe flicker/strobing. Full screen clears (`canvas.fillScreen(C_DARK_BG)`) and full header redraws now happen ONLY on screen transitions (`screenChanged = true`). During steady-state frames:
-  - `renderDashboard()` caches all 6 cards; static cards are untouched.
-  - `renderCustomDash()` uses per-gauge dirty caching.
-  - `renderSniffer()`, `renderLoggerControl()`, `renderWiFi()`, `renderSystem()` only update dynamic text regions in place.
-  - `renderSettings()` exits immediately if not `forceFull`.
-- **Touch Navigation Fixed**:
-  - `SWIPE_MIN_DIST_PX` reduced from 400px (50% screen width) to 120px for natural gestures.
-  - Bottom navigation bar now has direct hit tests for `< PREV` (x <= 220), `NEXT >` (x >= 580), and page dots (x = 328..472, y >= 436). Tapping `< PREV` or `NEXT >` or dots works instantly across all screens.
-- **Boot Splash & Auto-Dismiss**: Boot splash renders Toyota wordmark and auto-dismisses after 3 seconds into the Main Dashboard (Page 0), or immediately upon screen tap.
-- **Build & Flash**: Verified building cleanly with PlatformIO and flashing to physical hardware via `/dev/ttyACM0`. Live serial boots cleanly with all peripherals active.
+- **Flicker-Free Dirty-Rect Rendering & Offscreen Staging**: In single-buffer direct PSRAM scanout, the beam scans the buffer continuously at ~33 Hz. Page switches clear only the content area (0..440), leaving bottom navbar untouched. Steady-state updates use minimal dirty box updates or off-screen staging (`beginOffscreen()` / `endOffscreen()`).
+- **Touch Navigation Verified**:
+  - `SWIPE_MIN_DIST_PX` set to 120px for natural gestures.
+  - Bottom navigation bar has direct hit tests for `< PREV` (x <= 220), `NEXT >` (x >= 580), and page dots (x = 328..472, y >= 425). Tap detection filter relaxed to 1200ms.
+- **Vehicle Profiles Library**: 66 vendor-neutral profiles imported into `profiles/` from WiFlash catalogs (Toyota P34/P5, Ford MG1, Subaru BRZ/GR86).
+- **Build & Flash**: Verified building cleanly with PlatformIO and flashing to physical hardware via `/dev/ttyACM0`. Live serial boots cleanly with all peripherals active. Native tests 46/46 green.
 
 
 ## Device facts (verified 2026-09-05)
@@ -65,17 +63,16 @@ BOOT+RST, or `pio run -t upload --upload-port /dev/ttyACM0` after reset.
 3. **Vehicle/bench CAN**: OBD-II plug pin 6 = CAN-H, 14 = CAN-L, ground.
    Ignition ON → raw sniffer must show frames. Watch for `[CAN-TX] SAFETY`
    spam (should be absent at idle).
-4. **New UI surfaces needing touch-geometry verification** (never had a real
-   panel; these are the highest-probability first bugs, all in PR #4):
-   - Custom Dash ADD picker paged grid (signal list, PREV/NEXT) — `custom_dash.inl`
-   - Datalog signal picker (21/page, `<> ALL NONE DONE`) — `main.cpp` renderPidSelector/handleTouch
-   - Logger main screen tag list truncation with 15+ signals
-   If a tap misses: render rect and hit-test rect must match — grep the coords.
-5. **Speed calibration (issue #1 TODO)**: drive log `speed` vs phone GPS, then
-   fix `scale` in `profiles/toyota_tacoma_2016_2023.json` (0x0B4, currently
-   0.00621371, flagged `_calibration_warning`).
-6. After bench pass: merge PR #4, then TODO #6 (first-boot profile wizard) or
-   #5 (v2 schema expr hooks) per AGENTS.md.
+4. **Active Roadmap Milestone — LVGL-S2 (Issue #11)**:
+   - Port `renderDashboard()` (Page 0) and `custom_dash.inl` (Page 1) to native LVGL widgets in `src/ui.cpp`.
+   - Wire 6 gauges to profile accessors (`getSignalCount()`, `getSignalByIndex()`, etc.).
+   - Custom Dash dynamic add/drag/resize/styles + edit mode.
+   - Maintain 2-second stale signal blanking (`--`).
+5. **Subsequent Milestones**:
+   - S3 (Issue #12): Sniffer / Logger / Settings / System screens in LVGL.
+   - S4 (Issue #13): OOBE wizard + OTA updater.
+   - S5 (Issue #14): Telemetry simulator + native tests.
+   - S6 (Issue #15): Cutover & LGFX removal, bump to v0.5.0, merge PR #8.
 
 ## Known open bugs/limits (don't re-discover these)
 

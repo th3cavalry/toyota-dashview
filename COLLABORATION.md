@@ -2,35 +2,28 @@
 
 ## Current Status
 
-The DashView project has successfully completed the hardware flash and boot verification on the Waveshare 4.3B board (commit ed03f32). The device is connected via `/dev/ttyACM0` but cannot be accessed directly from this container environment.
+The DashView project is on branch `feat/lvgl-port` (tracking PR #8). The device is connected to FlowZ13 via `/dev/ttyACM0` and running live firmware.
+
+### Recent Bench Fixes Completed (2026-09-12):
+1. **Touch Navigation & Hitboxes**: Resolved. Swipe threshold adjusted to 120px, bottom navbar hit-test boxes mapped (`< PREV`, `NEXT >`, and dots), tap release detection instant.
+2. **Display Stability & Timing**:
+   - PCLK phase set to falling edge (`pclk_active_neg = 1`) and sync polarities aligned (`hsync_idle_low = 0`, `vsync_idle_low = 0`), eliminating letter shimmering and color fringing.
+   - Fixed raw CAN sniffer page tearing and horizontal jitter under heavy CAN traffic.
+3. **CPU DCache Write-Back Synchronization (`8dc426b`)**:
+   - Resolved the issue where glyph scanlines were missing or cut off on the physical screen.
+   - Added `esp_cache_msync()` with `ESP_CACHE_MSYNC_FLAG_DIR_C2M` across offscreen staging and steady-state dirty flushes so CPU writes to PSRAM commit before GDMA direct scanout.
+4. **Vehicle Profiles**: WiFlash signal catalogs imported (`b832bcf`), providing 66 profile JSONs in `profiles/`.
 
 ## Roles and Responsibilities
 
-### FlowZ13 (Primary Coder)
-- Has direct access to the physical hardware at `/dev/ttyACM0`
-- Responsible for building, flashing, and testing on the actual device
-- Can access the workspace and GitHub repository
+### FlowZ13 (Primary Coder / Hardware Operator)
+- Direct access to physical Waveshare 4.3B hardware at `/dev/ttyACM0`.
+- Responsible for flashing, capturing serial/screenshots, and verifying LCD behavior.
 
 ### Hermes Agent
-- Focuses on code review, documentation, and non-hardware related tasks
-- Can review code changes and provide feedback on the implementation
-- Will coordinate with FlowZ13 on specific implementation details
+- Architecture, non-hardware features, profile expansion, code review, and widget design.
 
-## Current Issues
-
-1. **Touch Screen Functionality**: The TRD logo displays correctly but when moving to the next screen, the touch doesn't work properly. The screen also tweaks/side to side in different parts.
-2. **Hardware Testing**: Need to verify profile picker touch geometry (cells y=272-314, x=34/222/410/598) and confirm hot-swap on a live bus.
-
-## Next Steps
-
-1. FlowZ13 will handle physical hardware testing
-2. We'll work together on code improvements and review
-3. Review and potentially update the touch handling logic in the UI code
-4. Verify that the profile picker touch areas are properly mapped
-
-## Technical Notes
-
-- The project is on the `feat/4.3b-migration` branch
-- Hardware validation is the active work
-- Touch handling is in `handleTouch()` function which branches per screen based on raw `touchLastX/Y`
-- Every render-card rect MUST have a matching touch y-range (see Settings cards)
+## Active Milestone: LVGL-S2 (Issue #11)
+- Port `renderDashboard()` (Page 0) and `custom_dash.inl` (Page 1) to native LVGL widgets in `src/ui.cpp`.
+- Gauge data driven by profile accessors (`getSignalCount()`, `getSignalByIndex()`).
+- Maintain 2s staleness gate (`--`) and profile hot-swapping.

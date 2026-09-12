@@ -85,13 +85,16 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
     - Tachometer Sweep Optimization: replaced loop of hundreds of single vertical line calls with 1–3 direct block `fillRect` calls.
     - Instant Touch Page Switching: removed frame timer latency; `nextScreen()`, `prevScreen()`, and dot taps in `handleTouch()` invoke `updateDisplay()` immediately on tap/swipe release.
     - Improved Tap Detection: relaxed tap duration filter from 600 ms to 1200 ms and extended navbar hit-box upward by 15 px (`touchLastY >= 425`), preventing missed or sluggish taps.
-- Build: `pio run` SUCCESS (0 warnings) — RAM 37.6% (123 KB), Flash 23.0% (1.50 MB / 6.5 MB). Native tests 46/46 passed.
+  - **Display Stability, Timing & DCache Write-Back Fixes (2026-09-12)**:
+    - **ST7262 PCLK Phase & Timing Flags (`9c39d25`)**: Fixed letter shimmering, color fringing, and micro-jitter by setting `pclk_active_neg = 1` and panel sync polarities (`hsync_idle_low = 0`, `vsync_idle_low = 0`, `de_idle_high = 0`). The ST7262 panel samples data on the falling PCLK edge.
+    - **Raw CAN Sniffer Modal / Page Shearing Fix (`3c5f17d`)**: Eliminated horizontal screen shifting and tearing during active CAN streaming by avoiding direct PSRAM contention and staging terminal redraws.
+    - **CPU DCache Write-Back Synchronization (`8dc426b`)**: Root-caused missing horizontal glyph scanlines ("text cut off at top and middle") and "unpacking" delay. The ESP32-S3 uses write-back L1 DCache for PSRAM, but direct GDMA scanout (`bounce_buffer_size_px = 0`) reads physical external PSRAM directly via DMA/AXI. Added `esp_cache_msync()` with `ESP_CACHE_MSYNC_FLAG_DIR_C2M` in `endOffscreen()`, `endOffscreenRows()`, and `syncCache()`, flushing dirty cache lines to physical RAM before scanout. Pre-sampled RTC over I2C in `renderSystem()` and wrapped diagnostic updates in offscreen staging.
+    - **WiFlash Signal Catalogs Imported (`b832bcf`)**: Added 66 vendor-neutral profile JSONs to `profiles/` covering Toyota P34/P5 (1,962 signals across 61 files), Ford MG1 (104 signals across 3 files), and Subaru BRZ / GR86 (83 signals across 2 files), plus converter tool `tools/wiflash_to_dashview.py`.
+- Build: `pio run` SUCCESS (0 warnings) — RAM 37.6% (123 KB), Flash 23.0% (1.50 MB / 6.5 MB). Native tests 46/46 passed. Hardware running on `/dev/ttyACM0`.
 
 ## IN PROGRESS
 
-- (none in code) Hardware validation on the bench is the active work: flash the
-  build, verify profile picker touch geometry (cells y=272-314, x=34/222/410/598),
-  and confirm hot-swap on a live bus.
+- LVGL-S2 (Issue #11): Porting Dashboard + Custom Dash screens to native LVGL widgets in `src/ui.cpp`.
 
 ## TODO / OPEN WORK
 
