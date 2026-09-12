@@ -1054,7 +1054,6 @@ void drawHeaderBar(const char* title, bool forceFull) {
 
 void drawBottomNavBar() {
     canvas.fillRect(0, UI_H - UI_NAVBAR_H, UI_W, UI_NAVBAR_H, canvas.color565(10, 13, 18));
-    canvas.drawFastHLine(0, UI_H - UI_NAVBAR_H, UI_W, C_CARD_BORDER);
 
     // < PREV pill button
     canvas.fillRoundRect(12, UI_H - UI_NAVBAR_H + 6, 96, 28, 6, C_CARD_INNER);
@@ -1069,7 +1068,7 @@ void drawBottomNavBar() {
     for (int i = 0; i < SCREEN_COUNT; i++) {
         int dx = startDotX + (i * dotSpacing);
         if (i == currentScreen) {
-            canvas.fillRoundRect(dx - 10, UI_H - 24, 20, 8, 4, C_TRD_RED); // TRD Red active capsule
+            canvas.fillRoundRect(dx - 12, UI_H - 24, 24, 8, 4, C_TRD_RED); // TRD Red active capsule
         } else {
             canvas.fillCircle(dx, UI_H - 20, 3, canvas.color565(55, 65, 85));
         }
@@ -1414,68 +1413,107 @@ void renderDashboard(bool forceFull = false) {
     }
 
     // 6. Status Ribbon (Wi-Fi, CAN RX, Free Memory, Real-Time Clock)
-    if (forceFull || millis() - s_lastRibbonMs >= 1000) {
-        s_lastRibbonMs = millis();
-        int ribY = 360;
+    static int s_lastWifiClient = -1;
+    static unsigned long s_lastPktCount = 0xFFFFFFFF;
+    static unsigned int s_lastHeapKB = 0;
+    static char s_lastRtcStamp[16] = "";
+
+    int ribY = 360;
+    int t0x = 20, ty = ribY + 8, tw = 184, th = 56;
+    int t1x = 212;
+    int t2x = 404;
+    int t3x = 596;
+
+    if (forceFull) {
         canvas.fillRoundRect(12, ribY, 776, 72, 8, C_CARD_BG);
         canvas.drawRoundRect(12, ribY, 776, 72, 8, C_CARD_BORDER);
 
         // Tile 0: Wi-Fi Hotspot
-        int t0x = 20, ty = ribY + 8, tw = 184, th = 56;
         canvas.fillRoundRect(t0x, ty, tw, th, 6, C_CARD_INNER);
         canvas.drawRoundRect(t0x, ty, tw, th, 6, C_CARD_BORDER);
         canvas.setFont(fonts::Font0);
         canvas.setTextColor(C_TEXT_MUTED);
         canvas.drawCenterString("WI-FI HOTSPOT", t0x + tw / 2, ty + 7);
 
-        bool wifiClient = (WiFi.status() == WL_CONNECTED || WiFi.softAPgetStationNum() > 0);
-        canvas.setFont(fonts::Font2);
-        canvas.setTextColor(wifiClient ? C_GREEN_OK : C_TEXT_CYAN);
-        canvas.drawCenterString(wifiClient ? "CLIENT ACTIVE" : "HOTSPOT READY", t0x + tw / 2, ty + 28);
-
         // Tile 1: CAN Bus Traffic
-        int t1x = 212;
         canvas.fillRoundRect(t1x, ty, tw, th, 6, C_CARD_INNER);
         canvas.drawRoundRect(t1x, ty, tw, th, 6, C_CARD_BORDER);
         canvas.setFont(fonts::Font0);
         canvas.setTextColor(C_TEXT_MUTED);
         canvas.drawCenterString("CAN BUS FRAMES", t1x + tw / 2, ty + 7);
 
-        snprintf(buf, sizeof(buf), "%lu pkts", packetCount);
-        canvas.setFont(fonts::Font2);
-        canvas.setTextColor(C_TEXT_WHITE);
-        canvas.drawCenterString(buf, t1x + tw / 2, ty + 28);
-
         // Tile 2: Free Memory (Heap)
-        int t2x = 404;
         canvas.fillRoundRect(t2x, ty, tw, th, 6, C_CARD_INNER);
         canvas.drawRoundRect(t2x, ty, tw, th, 6, C_CARD_BORDER);
         canvas.setFont(fonts::Font0);
         canvas.setTextColor(C_TEXT_MUTED);
         canvas.drawCenterString("FREE MEMORY", t2x + tw / 2, ty + 7);
 
-        snprintf(buf, sizeof(buf), "%u KB HEAP", (unsigned int)(ESP.getFreeHeap() / 1024));
-        canvas.setFont(fonts::Font2);
-        canvas.setTextColor(C_GREEN_OK);
-        canvas.drawCenterString(buf, t2x + tw / 2, ty + 28);
-
         // Tile 3: Real-Time Clock
-        int t3x = 596;
         canvas.fillRoundRect(t3x, ty, tw, th, 6, C_CARD_INNER);
         canvas.drawRoundRect(t3x, ty, tw, th, 6, C_CARD_BORDER);
         canvas.setFont(fonts::Font0);
         canvas.setTextColor(C_TEXT_MUTED);
         canvas.drawCenterString("REAL-TIME CLOCK", t3x + tw / 2, ty + 7);
 
-        char stamp[24];
-        if (rtcStamp(stamp, sizeof(stamp))) {
+        s_lastWifiClient = -1;
+        s_lastPktCount = 0xFFFFFFFF;
+        s_lastHeapKB = 0;
+        s_lastRtcStamp[0] = '\0';
+    }
+
+    if (forceFull || millis() - s_lastRibbonMs >= 1000) {
+        s_lastRibbonMs = millis();
+
+        // Tile 0: Wi-Fi Hotspot Status
+        bool wifiClient = (WiFi.status() == WL_CONNECTED || WiFi.softAPgetStationNum() > 0);
+        if (forceFull || (wifiClient ? 1 : 0) != s_lastWifiClient) {
+            s_lastWifiClient = wifiClient ? 1 : 0;
+            canvas.fillRect(t0x + 4, ty + 22, tw - 8, 28, C_CARD_INNER);
+            canvas.setFont(fonts::Font2);
+            canvas.setTextColor(wifiClient ? C_GREEN_OK : C_TEXT_CYAN);
+            canvas.drawCenterString(wifiClient ? "CLIENT ACTIVE" : "HOTSPOT READY", t0x + tw / 2, ty + 28);
+        }
+
+        // Tile 1: CAN Bus Traffic
+        if (forceFull || packetCount != s_lastPktCount) {
+            s_lastPktCount = packetCount;
+            canvas.fillRect(t1x + 4, ty + 22, tw - 8, 28, C_CARD_INNER);
+            snprintf(buf, sizeof(buf), "%lu pkts", packetCount);
             canvas.setFont(fonts::Font2);
             canvas.setTextColor(C_TEXT_WHITE);
-            canvas.drawCenterString(stamp + 11, t3x + tw / 2, ty + 28); // "HH:MM:SS"
-        } else {
+            canvas.drawCenterString(buf, t1x + tw / 2, ty + 28);
+        }
+
+        // Tile 2: Free Memory (Heap)
+        unsigned int heapKB = (unsigned int)(ESP.getFreeHeap() / 1024);
+        if (forceFull || heapKB != s_lastHeapKB) {
+            s_lastHeapKB = heapKB;
+            canvas.fillRect(t2x + 4, ty + 22, tw - 8, 28, C_CARD_INNER);
+            snprintf(buf, sizeof(buf), "%u KB HEAP", heapKB);
             canvas.setFont(fonts::Font2);
-            canvas.setTextColor(C_TEXT_MUTED);
-            canvas.drawCenterString("RTC SYNC", t3x + tw / 2, ty + 28);
+            canvas.setTextColor(C_GREEN_OK);
+            canvas.drawCenterString(buf, t2x + tw / 2, ty + 28);
+        }
+
+        // Tile 3: Real-Time Clock
+        char stamp[24];
+        if (rtcStamp(stamp, sizeof(stamp))) {
+            if (forceFull || strcmp(s_lastRtcStamp, stamp + 11) != 0) {
+                strncpy(s_lastRtcStamp, stamp + 11, sizeof(s_lastRtcStamp) - 1);
+                canvas.fillRect(t3x + 4, ty + 22, tw - 8, 28, C_CARD_INNER);
+                canvas.setFont(fonts::Font2);
+                canvas.setTextColor(C_TEXT_WHITE);
+                canvas.drawCenterString(stamp + 11, t3x + tw / 2, ty + 28);
+            }
+        } else {
+            if (forceFull || strcmp(s_lastRtcStamp, "RTC SYNC") != 0) {
+                strcpy(s_lastRtcStamp, "RTC SYNC");
+                canvas.fillRect(t3x + 4, ty + 22, tw - 8, 28, C_CARD_INNER);
+                canvas.setFont(fonts::Font2);
+                canvas.setTextColor(C_TEXT_MUTED);
+                canvas.drawCenterString("RTC SYNC", t3x + tw / 2, ty + 28);
+            }
         }
     }
 }

@@ -293,6 +293,10 @@ void LVGLCanvas::fillCircleHelper(int32_t x0, int32_t y0, int32_t r, uint8_t cor
     int32_t ddF_y = -2 * r;
     int32_t x = 0;
     int32_t y = r;
+    int32_t px_ = x;
+    int32_t py = y;
+
+    delta++; // Avoid +1 in loop
 
     while (x < y) {
         if (f >= 0) {
@@ -304,14 +308,16 @@ void LVGLCanvas::fillCircleHelper(int32_t x0, int32_t y0, int32_t r, uint8_t cor
         ddF_x += 2;
         f += ddF_x;
 
-        if (corners & 0x1) { // Left half
-            drawFastVLine(x0 - x, y0 - y, 2 * y + 1 + delta, c);
-            drawFastVLine(x0 - y, y0 - x, 2 * x + 1 + delta, c);
+        if (x < (y + 1)) {
+            if (corners & 0x2) drawFastVLine(x0 + x, y0 - y, 2 * y + delta, c);
+            if (corners & 0x1) drawFastVLine(x0 - x, y0 - y, 2 * y + delta, c);
         }
-        if (corners & 0x2) { // Right half
-            drawFastVLine(x0 + x, y0 - y, 2 * y + 1 + delta, c);
-            drawFastVLine(x0 + y, y0 - x, 2 * x + 1 + delta, c);
+        if (y != py) {
+            if (corners & 0x2) drawFastVLine(x0 + py, y0 - px_, 2 * px_ + delta, c);
+            if (corners & 0x1) drawFastVLine(x0 - py, y0 - px_, 2 * px_ + delta, c);
+            py = y;
         }
+        px_ = x;
     }
 }
 
@@ -341,6 +347,7 @@ void LVGLCanvas::fillRoundRect(int32_t x, int32_t y, int32_t w, int32_t h,
     fillCircleHelper(x + r,         y + r, r, 0x1, h - 2 * r - 1, c);
     _dirty = true;
 }
+
 void LVGLCanvas::drawCircle(int32_t x, int32_t y, int32_t r, uint16_t c) {
     int x0 = 0, y0 = r;
     int d = 3 - 2 * r;
@@ -357,19 +364,8 @@ void LVGLCanvas::drawCircle(int32_t x, int32_t y, int32_t r, uint16_t c) {
 }
 
 void LVGLCanvas::fillCircle(int32_t x, int32_t y, int32_t r, uint16_t c) {
-    int x0 = 0, y0 = r;
-    int d = 3 - 2 * r;
-    while (y0 >= x0) {
-        for (int xx = x - x0; xx <= x + x0; xx++) {
-            px(xx, y + y0, c); px(xx, y - y0, c);
-        }
-        for (int yy = y - y0 + 1; yy <= y + y0 - 1; yy++) {
-            px(x - x0, yy, c); px(x + x0, yy, c);
-        }
-        if (d < 0) d += 4 * x0 + 6;
-        else { d += 4 * (x0 - y0) + 10; y0--; }
-        x0++;
-    }
+    drawFastVLine(x, y - r, 2 * r + 1, c);
+    fillCircleHelper(x, y, r, 0x3, 0, c);
     _dirty = true;
 }
 
