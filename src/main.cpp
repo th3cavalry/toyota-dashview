@@ -987,7 +987,7 @@ void initGt911Touch() {
 
 // Custom Dash implementation (uses the palette + globals above)
 void drawHeaderBar(const char* title, bool forceFull = true);
-void drawBottomNavBar();
+void drawBottomNavBar(bool forceFull = false);
 #include "custom_dash.inl"
 
 // =========================================================================
@@ -1052,34 +1052,46 @@ void drawHeaderBar(const char* title, bool forceFull) {
     }
 }
 
-void drawBottomNavBar() {
-    canvas.fillRect(0, UI_H - UI_NAVBAR_H, UI_W, UI_NAVBAR_H, canvas.color565(10, 13, 18));
+void drawBottomNavBar(bool forceFull) {
+    static int s_lastNavScreen = -1;
 
-    // < PREV pill button
-    canvas.fillRoundRect(12, UI_H - UI_NAVBAR_H + 6, 96, 28, 6, C_CARD_INNER);
-    canvas.drawRoundRect(12, UI_H - UI_NAVBAR_H + 6, 96, 28, 6, C_CARD_BORDER);
-    canvas.setTextColor(C_TEXT_MUTED);
-    canvas.setFont(fonts::Font2);
-    canvas.drawCenterString("< PREV", 60, UI_H - UI_NAVBAR_H + 11);
+    if (forceFull || s_lastNavScreen < 0) {
+        // Full navbar background and persistent navigation pills
+        canvas.fillRect(0, UI_H - UI_NAVBAR_H, UI_W, UI_NAVBAR_H, canvas.color565(10, 13, 18));
 
-    // Center Page Indicator capsules / dots
-    int dotSpacing = 24;
-    int startDotX = 400 - (((SCREEN_COUNT - 1) * dotSpacing) / 2);
-    for (int i = 0; i < SCREEN_COUNT; i++) {
-        int dx = startDotX + (i * dotSpacing);
-        if (i == currentScreen) {
-            canvas.fillRoundRect(dx - 12, UI_H - 24, 24, 8, 4, C_TRD_RED); // TRD Red active capsule
-        } else {
-            canvas.fillCircle(dx, UI_H - 20, 3, canvas.color565(55, 65, 85));
-        }
+        // < PREV pill button
+        canvas.fillRoundRect(12, UI_H - UI_NAVBAR_H + 6, 96, 28, 6, C_CARD_INNER);
+        canvas.drawRoundRect(12, UI_H - UI_NAVBAR_H + 6, 96, 28, 6, C_CARD_BORDER);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.setFont(fonts::Font2);
+        canvas.drawCenterString("< PREV", 60, UI_H - UI_NAVBAR_H + 11);
+
+        // NEXT > pill button
+        canvas.fillRoundRect(UI_W - 108, UI_H - UI_NAVBAR_H + 6, 96, 28, 6, C_CARD_INNER);
+        canvas.drawRoundRect(UI_W - 108, UI_H - UI_NAVBAR_H + 6, 96, 28, 6, C_CARD_BORDER);
+        canvas.setTextColor(C_TEXT_MUTED);
+        canvas.setFont(fonts::Font2);
+        canvas.drawCenterString("NEXT >", UI_W - 60, UI_H - UI_NAVBAR_H + 11);
     }
 
-    // NEXT > pill button
-    canvas.fillRoundRect(UI_W - 108, UI_H - UI_NAVBAR_H + 6, 96, 28, 6, C_CARD_INNER);
-    canvas.drawRoundRect(UI_W - 108, UI_H - UI_NAVBAR_H + 6, 96, 28, 6, C_CARD_BORDER);
-    canvas.setTextColor(C_TEXT_MUTED);
-    canvas.setFont(fonts::Font2);
-    canvas.drawCenterString("NEXT >", UI_W - 60, UI_H - UI_NAVBAR_H + 11);
+    if (forceFull || s_lastNavScreen != currentScreen) {
+        s_lastNavScreen = currentScreen;
+
+        // Clear only the indicator dots region (x: 312..488, y: 452..470)
+        int dotSpacing = 24;
+        int startDotX = 400 - (((SCREEN_COUNT - 1) * dotSpacing) / 2);
+        int dotRegionW = ((SCREEN_COUNT - 1) * dotSpacing) + 36;
+        canvas.fillRect(startDotX - 18, UI_H - 28, dotRegionW, 18, canvas.color565(10, 13, 18));
+
+        for (int i = 0; i < SCREEN_COUNT; i++) {
+            int dx = startDotX + (i * dotSpacing);
+            if (i == currentScreen) {
+                canvas.fillRoundRect(dx - 12, UI_H - 24, 24, 8, 4, C_TRD_RED); // TRD Red active capsule
+            } else {
+                canvas.fillCircle(dx, UI_H - 20, 3, canvas.color565(55, 65, 85));
+            }
+        }
+    }
 }
 
 // Page 0: Live Vehicle Cluster (TRD Motorsport Gauge)
@@ -2389,6 +2401,11 @@ void updateDisplay() {
                          profChanged;
 
     if (screenChanged) {
+        bool isModal = isPidConfigOpen || isRawSnifferModalOpen;
+        bool modalJustClosed = (!isModal && (s_lastPidConfig || s_lastSnifferModal));
+        bool isFirst = (s_lastScreen == (DisplayScreen)-1);
+        bool orientationChanged = (isDisplayFlipped != s_lastFlipped);
+
         s_lastScreen = currentScreen;
         s_lastEditMode = g_cdEditMode;
         s_lastEditorKind = (int)g_cdEditorKind;
@@ -2397,7 +2414,14 @@ void updateDisplay() {
         s_lastFlipped = isDisplayFlipped;
         s_lastBl = backlightEnabled;
         s_lastProfileId = curProf;
-        canvas.fillScreen(C_DARK_BG);
+
+        if (isModal) {
+            canvas.fillScreen(C_DARK_BG);
+        } else {
+            // Clear only content area (0..440) — leaves bottom navbar completely intact!
+            canvas.fillRect(0, 0, UI_W, UI_H - UI_NAVBAR_H, C_DARK_BG);
+            drawBottomNavBar(isFirst || modalJustClosed || orientationChanged);
+        }
     }
 
     switch (currentScreen) {
