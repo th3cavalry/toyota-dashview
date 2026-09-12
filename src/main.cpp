@@ -1442,30 +1442,30 @@ void renderDashboard(bool forceFull = false) {
         // Tile 0: Wi-Fi Hotspot
         canvas.fillRoundRect(t0x, ty, tw, th, 6, C_CARD_INNER);
         canvas.drawRoundRect(t0x, ty, tw, th, 6, C_CARD_BORDER);
-        canvas.setFont(fonts::Font0);
+        canvas.setFont(fonts::Font2);
         canvas.setTextColor(C_TEXT_MUTED);
-        canvas.drawCenterString("WI-FI HOTSPOT", t0x + tw / 2, ty + 7);
+        canvas.drawCenterString("WI-FI HOTSPOT", t0x + tw / 2, ty + 6);
 
         // Tile 1: CAN Bus Traffic
         canvas.fillRoundRect(t1x, ty, tw, th, 6, C_CARD_INNER);
         canvas.drawRoundRect(t1x, ty, tw, th, 6, C_CARD_BORDER);
-        canvas.setFont(fonts::Font0);
+        canvas.setFont(fonts::Font2);
         canvas.setTextColor(C_TEXT_MUTED);
-        canvas.drawCenterString("CAN BUS FRAMES", t1x + tw / 2, ty + 7);
+        canvas.drawCenterString("CAN BUS FRAMES", t1x + tw / 2, ty + 6);
 
         // Tile 2: Free Memory (Heap)
         canvas.fillRoundRect(t2x, ty, tw, th, 6, C_CARD_INNER);
         canvas.drawRoundRect(t2x, ty, tw, th, 6, C_CARD_BORDER);
-        canvas.setFont(fonts::Font0);
+        canvas.setFont(fonts::Font2);
         canvas.setTextColor(C_TEXT_MUTED);
-        canvas.drawCenterString("FREE MEMORY", t2x + tw / 2, ty + 7);
+        canvas.drawCenterString("FREE MEMORY", t2x + tw / 2, ty + 6);
 
         // Tile 3: Real-Time Clock
         canvas.fillRoundRect(t3x, ty, tw, th, 6, C_CARD_INNER);
         canvas.drawRoundRect(t3x, ty, tw, th, 6, C_CARD_BORDER);
-        canvas.setFont(fonts::Font0);
+        canvas.setFont(fonts::Font2);
         canvas.setTextColor(C_TEXT_MUTED);
-        canvas.drawCenterString("REAL-TIME CLOCK", t3x + tw / 2, ty + 7);
+        canvas.drawCenterString("REAL-TIME CLOCK", t3x + tw / 2, ty + 6);
 
         s_lastWifiClient = -1;
         s_lastPktCount = 0xFFFFFFFF;
@@ -1728,9 +1728,9 @@ void renderSniffer(bool forceFull = false) {
         canvas.setTextColor(C_TEXT_CYAN);
         canvas.drawString("Tap to open live scrolling terminal with pause, clear & frame inspection", 50, 350);
 
-        canvas.setFont(fonts::Font0);
+        canvas.setFont(fonts::Font2);
         canvas.setTextColor(C_TEXT_MUTED);
-        canvas.drawString("Monitors all standard 11-bit and extended 29-bit bus frames in real time", 50, 382);
+        canvas.drawString("Monitors all standard 11-bit and extended 29-bit bus frames in real time", 50, 380);
 
         drawBottomNavBar();
         s_lastSnifferTick = millis();
@@ -1904,9 +1904,9 @@ void renderLoggerControl(bool forceFull = false) {
         canvas.setTextColor(C_TEXT_CYAN);
         canvas.drawString(tagList.c_str(), 46, 186);
 
-        canvas.setFont(fonts::Font0);
+        canvas.setFont(fonts::Font2);
         canvas.setTextColor(C_TEXT_MUTED);
-        canvas.drawString("Sampling at 10 Hz over ISO-TP diagnostics (0x750/0x7D8) to MicroSD card", 34, 246);
+        canvas.drawString("Sampling at 10 Hz over ISO-TP diagnostics to MicroSD card", 34, 246);
 
         // 3. Configure Recorded PIDs Button (y: 292..428, h: 136)
         canvas.fillRoundRect(12, 292, 776, 136, 8, C_CARD_BG);
@@ -1925,9 +1925,9 @@ void renderLoggerControl(bool forceFull = false) {
         canvas.setTextColor(C_TEXT_CYAN);
         canvas.drawString("Tap here to customize parameters recorded to SD (10 Hz rate)", 50, 350);
 
-        canvas.setFont(fonts::Font0);
+        canvas.setFont(fonts::Font2);
         canvas.setTextColor(C_TEXT_MUTED);
-        canvas.drawString("Profile-defined vehicle signals and OBD-II standard PIDs supported", 50, 382);
+        canvas.drawString("Profile-defined vehicle signals and OBD-II standard PIDs supported", 50, 380);
 
         drawBottomNavBar();
         s_lastLoggerTick = millis();
@@ -2335,11 +2335,11 @@ void renderSettings(bool forceFull = false) {
     // Box: x=12, y=358, w=776, h=52
     canvas.fillRoundRect(12, 358, 776, 52, 8, C_CARD_BG);
     canvas.drawRoundRect(12, 358, 776, 52, 8, C_CARD_BORDER);
-    canvas.fillRect(14, 358, 6, 52, C_TRD_BURGUNDY);
+    canvas.fillRect(14, 358, 6, 52, C_TRD_RED);
 
-    canvas.fillRoundRect(34, 362, 732, 44, 6, canvas.color565(45, 18, 22));
-    canvas.drawRoundRect(34, 362, 732, 44, 6, C_TRD_BURGUNDY);
-    canvas.setTextColor(canvas.color565(255, 120, 120));
+    canvas.fillRoundRect(34, 362, 732, 44, 6, C_CARD_INNER);
+    canvas.drawRoundRect(34, 362, 732, 44, 6, canvas.color565(160, 40, 50));
+    canvas.setTextColor(canvas.color565(255, 90, 90));
     canvas.setFont(fonts::Font4);
     canvas.drawCenterString("REBOOT CONTROLLER", 400, 372);
 
