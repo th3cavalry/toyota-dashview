@@ -14,8 +14,8 @@
 // =========================================================================
 #pragma once
 #include <Arduino.h>
-#include <LovyanGFX.hpp>
 #include <vector>
+#include "display.h"       // LVGLCanvas: fillRect / drawRoundRect / drawString / color565
 
 // ---- Screen ids mirrored from main.cpp DisplayScreen (keep in sync) --------
 #define CD_SCREEN_DASHBOARD 0
@@ -76,7 +76,7 @@ void cdSeedDefaults();
 void cdAppendQueries(uint8_t modes[], uint8_t pids[], int& count, int cap);
 
 // ---- Rendering ------------------------------------------------------------
-void renderCustomDash();
+void renderCustomDash(bool forceFull = false);
 void renderCustomDashEditor();
 
 // ---- Touch ----------------------------------------------------------------

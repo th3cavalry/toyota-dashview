@@ -1,0 +1,82 @@
+{
+  "id": "ford_mg1_gen2-3",
+  "name": "Ford MG1 Gen2 P3",
+  "match": {
+    "make": "Ford"
+  },
+  "inherits": "j1979_base",
+  "bus": {
+    "physical": "classic",
+    "arb_bitrate": 500000,
+    "protocol": "iso_tp",
+    "req_id": "0x7DF",
+    "func_id": "0x7E0",
+    "listen_only": true
+  },
+  "signals": [
+    {
+      "key": "brake_switch_a_applied",
+      "kind": "obd_poll",
+      "mode": "0x03",
+      "pid": "0x2B00",
+      "req_id": "0x7E0",
+      "resp_prefix": "0x63",
+      "mask": 4,
+      "right_shift": 2,
+      "decimals": 3004,
+      "unit": "4",
+      "map": {
+        "00": "Released",
+        "01": "Applied"
+      }
+    },
+    {
+      "key": "fuel_level",
+      "kind": "obd_poll",
+      "mode": "0x03",
+      "pid": "0xF42F",
+      "req_id": "0x7E0",
+      "resp_prefix": "0x63",
+      "mask": 255,
+      "right_shift": 0,
+      "decimals": 3006,
+      "unit": "1"
+    },
+    {
+      "key": "control_module_voltage",
+      "kind": "obd_poll",
+      "mode": "0x03",
+      "pid": "0xF442",
+      "req_id": "0x7E0",
+      "resp_prefix": "0x63",
+      "mask": 65535,
+      "right_shift": 0,
+      "decimals": 3007,
+      "unit": "2"
+    },
+    {
+      "key": "ambient_air_temperature",
+      "kind": "obd_poll",
+      "mode": "0x03",
+      "pid": "0xF446",
+      "req_id": "0x7E0",
+      "resp_prefix": "0x63",
+      "mask": 255,
+      "right_shift": 0,
+      "decimals": 3008,
+      "unit": "1"
+    },
+    {
+      "key": "vehicle_odometer",
+      "kind": "obd_poll",
+      "mode": "0x03",
+      "pid": "0xF4A6",
+      "req_id": "0x7E0",
+      "resp_prefix": "0x63",
+      "mask": 4294967295,
+      "right_shift": 0,
+      "decimals": 3009,
+      "unit": "4"
+    }
+  ]
+}

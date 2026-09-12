@@ -121,8 +121,10 @@ static void cdCellRect(int cx, int cy, int cw, int ch, int& x, int& y, int& w, i
 static void cdPixelToCell(int px, int py, int& cx, int& cy) {
     cx = (px - CD_GRID_X) / CD_CELL_W;
     cy = (py - CD_GRID_Y) / CD_CELL_H;
-    if (cx < 0) cx = 0; if (cx >= CD_COLS) cx = CD_COLS - 1;
-    if (cy < 0) cy = 0; if (cy >= CD_ROWS) cy = CD_ROWS - 1;
+    if (cx < 0) cx = 0;
+    if (cx >= CD_COLS) cx = CD_COLS - 1;
+    if (cy < 0) cy = 0;
+    if (cy >= CD_ROWS) cy = CD_ROWS - 1;
 }
 // occupancy test: does any OTHER gauge overlap rect (x,y,w,h in cells)?
 static bool cdOverlap(int idx, int x, int y, int w, int h) {
@@ -226,7 +228,7 @@ void cdAppendQueries(uint8_t modes[], uint8_t pids[], int& count, int cap) {
 // =========================================================================
 // GAUGE RENDERING
 // =========================================================================
-static void cdDrawGauge(const CdGauge& g) {
+static void cdDrawGauge(const CdGauge& g, int slotIdx = -1, bool force = false) {
     int x, y, w, h; cdCellRect(g.x, g.y, g.w, g.h, x, y, w, h);
     // 2px inset gutter so gauges never touch
     x += 2; y += 2; w -= 4; h -= 4;
@@ -235,11 +237,6 @@ static void cdDrawGauge(const CdGauge& g) {
 
     bool flashOn = true;
     if (warn && g.warnMode == CD_WARN_FLASH) flashOn = ((millis() / 300) % 2) == 0;
-
-    uint16_t bg = warn ? cdColor((CdColor)g.warnColor) : C_CARD_BG;
-    if (!flashOn) bg = C_CARD_INNER;
-    canvas.fillRoundRect(x, y, w, h, 8, bg);
-    canvas.drawRoundRect(x, y, w, h, 8, border);
 
     CdMeta m = cdIsSig(g) ? cdSigMeta(g.sigKey) : cdMeta(g.pid);
     char labelBuf[24];
@@ -257,11 +254,6 @@ static void cdDrawGauge(const CdGauge& g) {
     } else {
         v = cdVal(g);
     }
-    uint16_t valColor = warn ? (flashOn ? TFT_BLACK : C_TEXT_WHITE) : C_TEXT_WHITE;
-
-    canvas.setFont(&fonts::Font2);
-    canvas.setTextColor(warn && flashOn ? TFT_BLACK : C_TEXT_MUTED, bg);
-    canvas.drawString(label, x + 8, y + 6);
 
     char buf[24];
     if (isText) {
@@ -276,8 +268,37 @@ static void cdDrawGauge(const CdGauge& g) {
         if (m.unit[0]) strncat(buf, m.unit, sizeof(buf) - strlen(buf) - 1);
     }
 
+    static char s_lastGaugeBuf[CD_MAX_GAUGES][24];
+    static bool s_lastGaugeWarn[CD_MAX_GAUGES];
+    static bool s_lastGaugeFlash[CD_MAX_GAUGES];
+
+    if (!force && slotIdx >= 0 && slotIdx < CD_MAX_GAUGES) {
+        if (strcmp(buf, s_lastGaugeBuf[slotIdx]) == 0 &&
+            warn == s_lastGaugeWarn[slotIdx] &&
+            flashOn == s_lastGaugeFlash[slotIdx]) {
+            return;
+        }
+    }
+    if (slotIdx >= 0 && slotIdx < CD_MAX_GAUGES) {
+        strncpy(s_lastGaugeBuf[slotIdx], buf, sizeof(s_lastGaugeBuf[slotIdx]) - 1);
+        s_lastGaugeBuf[slotIdx][sizeof(s_lastGaugeBuf[slotIdx]) - 1] = '\0';
+        s_lastGaugeWarn[slotIdx] = warn;
+        s_lastGaugeFlash[slotIdx] = flashOn;
+    }
+
+    uint16_t bg = warn ? cdColor((CdColor)g.warnColor) : C_CARD_BG;
+    if (!flashOn) bg = C_CARD_INNER;
+    canvas.fillRoundRect(x, y, w, h, 8, bg);
+    canvas.drawRoundRect(x, y, w, h, 8, border);
+
+    uint16_t valColor = warn ? (flashOn ? TFT_BLACK : C_TEXT_WHITE) : C_TEXT_WHITE;
+
+    canvas.setFont(fonts::Font2);
+    canvas.setTextColor(warn && flashOn ? TFT_BLACK : C_TEXT_MUTED, bg);
+    canvas.drawString(label, x + 8, y + 6);
+
     int valSize = (h > 70) ? 2 : ((h > 46) ? 1 : 0);
-    canvas.setFont(valSize == 2 ? &fonts::Font4 : &fonts::Font2);
+    canvas.setFont(valSize == 2 ? fonts::Font5 : fonts::Font2);
     canvas.setTextColor(valColor, bg);
 
     if (g.style == CD_STYLE_NUMBER || (g.style != CD_STYLE_NUMBER && h < 44)) {
@@ -285,52 +306,70 @@ static void cdDrawGauge(const CdGauge& g) {
     } else if (g.style == CD_STYLE_HBAR) {
         canvas.drawRightString(buf, x + w - 8, y + 6);
         int barX = x + 8, barY = y + h - 26, barW = w - 16, barH = 14;
-        canvas.drawRoundRect(barX, barY, barW, barH, 3, warn && flashOn ? TFT_BLACK : C_CARD_BORDER);
+        canvas.fillRoundRect(barX, barY, barW, barH, 4, C_CARD_INNER);
+        canvas.drawRoundRect(barX, barY, barW, barH, 4, warn && flashOn ? TFT_BLACK : C_CARD_BORDER);
         float frac = (g.maxVal > g.minVal) ? (v - g.minVal) / (g.maxVal - g.minVal) : 0;
-        if (frac < 0) frac = 0; if (frac > 1) frac = 1;
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
         int fillW = (int)(frac * (barW - 4));
         if (fillW > 0)
-            canvas.fillRect(barX + 2, barY + 2, fillW, barH - 4,
+            canvas.fillRoundRect(barX + 2, barY + 2, fillW, barH - 4, 2,
                             warn ? (flashOn ? TFT_BLACK : cdColor((CdColor)g.warnColor)) : C_TEXT_CYAN);
     } else { // VBAR
         canvas.drawCenterString(buf, x + w / 2, y + 6);
         int barX = x + 8, barY = y + 26, barW = 16, barH = h - 34;
-        canvas.drawRoundRect(barX, barY, barW, barH, 3, warn && flashOn ? TFT_BLACK : C_CARD_BORDER);
+        canvas.fillRoundRect(barX, barY, barW, barH, 4, C_CARD_INNER);
+        canvas.drawRoundRect(barX, barY, barW, barH, 4, warn && flashOn ? TFT_BLACK : C_CARD_BORDER);
         float frac = (g.maxVal > g.minVal) ? (v - g.minVal) / (g.maxVal - g.minVal) : 0;
-        if (frac < 0) frac = 0; if (frac > 1) frac = 1;
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
         int fillH = (int)(frac * (barH - 4));
         if (fillH > 0)
-            canvas.fillRect(barX + 2, barY + barH - 2 - fillH, barW - 4, fillH,
+            canvas.fillRoundRect(barX + 2, barY + barH - 2 - fillH, barW - 4, fillH, 2,
                             warn ? (flashOn ? TFT_BLACK : cdColor((CdColor)g.warnColor)) : C_TEXT_CYAN);
     }
 }
 
-// Customize pill (top-right of content strip, normal mode only)
-#define CD_BTN_CUST_X 664
-#define CD_BTN_CUST_Y 52
+// Customize pill (positioned cleanly in header bar, normal mode only)
+#define CD_BTN_CUST_X 400
+#define CD_BTN_CUST_Y 7
 #define CD_BTN_CUST_W 124
-#define CD_BTN_CUST_H 24
+#define CD_BTN_CUST_H 30
 static void cdDrawCustomizePill() {
-    canvas.fillRoundRect(CD_BTN_CUST_X, CD_BTN_CUST_Y, CD_BTN_CUST_W, CD_BTN_CUST_H, 4, canvas.color565(25, 35, 52));
-    canvas.drawRoundRect(CD_BTN_CUST_X, CD_BTN_CUST_Y, CD_BTN_CUST_W, CD_BTN_CUST_H, 4, canvas.color565(60, 100, 160));
-    canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font2);
-    canvas.drawCenterString("CUSTOMIZE", CD_BTN_CUST_X + CD_BTN_CUST_W / 2, CD_BTN_CUST_Y + 4);
+    canvas.fillRoundRect(CD_BTN_CUST_X, CD_BTN_CUST_Y, CD_BTN_CUST_W, CD_BTN_CUST_H, 5, canvas.color565(25, 35, 52));
+    canvas.drawRoundRect(CD_BTN_CUST_X, CD_BTN_CUST_Y, CD_BTN_CUST_W, CD_BTN_CUST_H, 5, canvas.color565(60, 100, 160));
+    canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(fonts::Font2);
+    canvas.drawCenterString("CUSTOMIZE", CD_BTN_CUST_X + CD_BTN_CUST_W / 2, CD_BTN_CUST_Y + 7);
 }
 
-void renderCustomDash() {
+void renderCustomDash(bool forceFull) {
     if (g_cdEditorKind != CD_EDIT_NONE) { renderCustomDashEditor(); return; }
-    drawHeaderBar(g_cdEditMode ? "CUSTOM DASH - EDIT MODE" : "CUSTOM DASH");
+
+    static unsigned long s_lastCdHeader = 0;
+    if (forceFull) {
+        s_lastCdHeader = millis();
+        drawHeaderBar(g_cdEditMode ? "CUSTOM DASH - EDIT MODE" : "CUSTOM DASH", true);
+    } else if (millis() - s_lastCdHeader >= 1000) {
+        s_lastCdHeader = millis();
+        drawHeaderBar(g_cdEditMode ? "CUSTOM DASH - EDIT MODE" : "CUSTOM DASH", false);
+    }
 
     if (!g_cdEditMode) {
-        if (g_cdGaugeCount == 0) {
-            canvas.setFont(&fonts::Font4); canvas.setTextColor(C_TEXT_MUTED);
-            canvas.drawCenterString("No gauges yet.", 400, 220);
-            canvas.drawCenterString("Tap CUSTOMIZE to add one.", 400, 250);
+        if (forceFull) {
+            if (g_cdGaugeCount == 0) {
+                canvas.setFont(fonts::Font4); canvas.setTextColor(C_TEXT_MUTED);
+                canvas.drawCenterString("No gauges yet.", 400, 220);
+                canvas.drawCenterString("Tap CUSTOMIZE to add one.", 400, 250);
+            }
+            for (int i = 0; i < CD_MAX_GAUGES; i++)
+                if (g_cdGauges[i].valid) cdDrawGauge(g_cdGauges[i], i, true);
+            cdDrawCustomizePill();
+            drawBottomNavBar();
+            return;
         }
+
         for (int i = 0; i < CD_MAX_GAUGES; i++)
-            if (g_cdGauges[i].valid) cdDrawGauge(g_cdGauges[i]);
-        cdDrawCustomizePill();
-        drawBottomNavBar();
+            if (g_cdGauges[i].valid) cdDrawGauge(g_cdGauges[i], i, false);
         return;
     }
 
@@ -342,7 +381,7 @@ void renderCustomDash() {
         canvas.drawLine(CD_GRID_X, CD_GRID_Y + r * CD_CELL_H, CD_GRID_X + CD_GRID_W, CD_GRID_Y + r * CD_CELL_H, canvas.color565(30, 36, 50));
     for (int i = 0; i < CD_MAX_GAUGES; i++) {
         if (!g_cdGauges[i].valid) continue;
-        cdDrawGauge(g_cdGauges[i]);
+        cdDrawGauge(g_cdGauges[i], i, true);
         // resize handle (bottom-right corner)
         int x, y, w, h; cdCellRect(g_cdGauges[i].x, g_cdGauges[i].y, g_cdGauges[i].w, g_cdGauges[i].h, x, y, w, h);
         canvas.fillTriangle(x + w - 4, y + h - 4, x + w - 22, y + h - 4, x + w - 4, y + h - 22, C_TEXT_CYAN);
@@ -351,7 +390,7 @@ void renderCustomDash() {
     int by = 412;
     canvas.fillRoundRect(12, by, 200, 44, 6, canvas.color565(15, 38, 22));
     canvas.drawRoundRect(12, by, 200, 44, 6, C_GREEN_OK);
-    canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font4);
+    canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(fonts::Font4);
     canvas.drawCenterString("+ ADD GAUGE", 112, by + 8);
     canvas.fillRoundRect(224, by, 200, 44, 6, canvas.color565(45, 20, 25));
     canvas.drawRoundRect(224, by, 200, 44, 6, C_TRD_BURGUNDY);
@@ -398,26 +437,26 @@ void renderCustomDashEditor() {
     canvas.fillRect(0, E_TOP, 800, 480 - E_TOP - 40, canvas.color565(14, 16, 22));
 
     if (g_cdEditorKind == CD_EDIT_ADD) {
-        char pbuf[48];
-        canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+        char pbuf[64];
+        canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
         snprintf(pbuf, sizeof(pbuf), "Choose a parameter (page %d/%d):", g_cdPickerPage + 1,
                  (cdPickerTotal() + CD_PICKER_PER_PAGE - 1) / CD_PICKER_PER_PAGE);
         canvas.drawString(pbuf, 34, E_TOP + 12);
         int colW = 250, rowH = 46, sx = 12, sy = E_TOP + 44;
         for (int slot = 0; slot < CD_PICKER_PER_PAGE; slot++) {
-            int itemIdx; char lbl[26];
+            int itemIdx; char lbl[32];
             int kind = cdPickerItem(g_cdPickerPage * CD_PICKER_PER_PAGE + slot, itemIdx, lbl, sizeof(lbl));
             if (kind < 0) continue;
             int col = slot % 3, row = slot / 3;
             int bx = sx + col * (colW + 8), by = sy + row * (rowH + 6);
             canvas.fillRoundRect(bx, by, colW, rowH, 6, kind == 1 ? canvas.color565(20, 32, 26) : C_CARD_BG);
             canvas.drawRoundRect(bx, by, colW, rowH, 6, kind == 1 ? canvas.color565(60, 160, 90) : C_CARD_BORDER);
-            canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font2);
+            canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(fonts::Font2);
             canvas.drawString(lbl, bx + 10, by + 15);
         }
         // Page nav + Cancel (bottom)
         canvas.fillRoundRect(12, 412, 200, 44, 6, canvas.color565(25, 35, 52));
-        canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font4);
+        canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(fonts::Font4);
         canvas.drawCenterString("PREV", 112, 420);
         canvas.fillRoundRect(224, 412, 200, 44, 6, canvas.color565(25, 35, 52));
         canvas.drawCenterString("NEXT", 324, 420);
@@ -431,14 +470,14 @@ void renderCustomDashEditor() {
     }
     CdGauge& g = g_cdGauges[g_cdEditorIdx];
     char buf[48];
-    canvas.setFont(&fonts::Font4); canvas.setTextColor(C_TEXT_WHITE);
+    canvas.setFont(fonts::Font4); canvas.setTextColor(C_TEXT_WHITE);
     if (cdIsSig(g)) snprintf(buf, sizeof(buf), "%s", g.sigKey);
     else            snprintf(buf, sizeof(buf), "%s", availablePids[g.pid].label);
     canvas.drawString(buf, 34, E_TOP + 12);
     // DELETE button (top-right)
     canvas.fillRoundRect(656, E_TOP + 6, 132, 34, 6, canvas.color565(45, 18, 22));
     canvas.drawRoundRect(656, E_TOP + 6, 132, 34, 6, C_TRD_RED);
-    canvas.setTextColor(canvas.color565(255,120,120)); canvas.setFont(&fonts::Font2);
+    canvas.setTextColor(canvas.color565(255,120,120)); canvas.setFont(fonts::Font2);
     canvas.drawCenterString("DELETE", 722, E_TOP + 15);
 
     const char* styles[3] = {"NUMBER", "HBAR", "VBAR"};
@@ -446,19 +485,19 @@ void renderCustomDashEditor() {
     CdColor cols[6] = {CD_COL_CYAN, CD_COL_GREEN, CD_COL_ORANGE, CD_COL_RED, CD_COL_WHITE, CD_COL_GOLD};
 
     // Row 0: style
-    canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
     canvas.drawString("STYLE", 34, e_rowY(0) + 12);
     for (int i = 0; i < 3; i++) {
         int bx = 160 + i * 150;
         bool on = g.style == i;
         canvas.fillRoundRect(bx, e_rowY(0), 140, 40, 6, on ? C_TRD_RED : C_CARD_BG);
         canvas.drawRoundRect(bx, e_rowY(0), 140, 40, 6, on ? C_TEXT_WHITE : C_CARD_BORDER);
-        canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(C_TEXT_WHITE); canvas.setFont(fonts::Font2);
         canvas.drawCenterString(styles[i], bx + 70, e_rowY(0) + 12);
     }
 
     // Row 1: MIN / MAX steppers
-    canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
     canvas.drawString("SCALE", 34, e_rowY(1) + 12);
     snprintf(buf, sizeof(buf), "MIN %.0f", g.minVal);
     canvas.fillRoundRect(160, e_rowY(1), 150, 40, 6, C_CARD_INNER); canvas.drawRoundRect(160, e_rowY(1), 150, 40, 6, C_CARD_BORDER);
@@ -472,7 +511,7 @@ void renderCustomDashEditor() {
     canvas.setTextColor(C_TEXT_MUTED); canvas.drawString("+", 466, e_rowY(1) + 12);
 
     // Row 2: WARN HIGH value + OFF
-    canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
     canvas.drawString("WARN>", 34, e_rowY(2) + 12);
     snprintf(buf, sizeof(buf), "%.0f", g.warnHi <= -1e29f ? 0 : g.warnHi);
     canvas.fillRoundRect(160, e_rowY(2), 320, 40, 6, g.warnHi <= -1e29f ? C_CARD_INNER : canvas.color565(45, 20, 25));
@@ -482,24 +521,25 @@ void renderCustomDashEditor() {
     canvas.setTextColor(C_TEXT_MUTED); canvas.drawString("+", 466, e_rowY(2) + 12);
 
     // Row 3: warn mode + color swatches
-    canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
     canvas.drawString("CUE", 34, e_rowY(3) + 12);
     for (int i = 0; i < 3; i++) {
         int bx = 160 + i * 90;
         bool on = g.warnMode == i;
         canvas.fillRoundRect(bx, e_rowY(3), 82, 40, 6, on ? C_TRD_ORANGE : C_CARD_BG);
         canvas.drawRoundRect(bx, e_rowY(3), 82, 40, 6, on ? C_TEXT_WHITE : C_CARD_BORDER);
-        canvas.setTextColor(on ? TFT_BLACK : C_TEXT_MUTED); canvas.setFont(&fonts::Font0);
+        canvas.setTextColor(on ? TFT_BLACK : C_TEXT_MUTED); canvas.setFont(fonts::Font0);
         canvas.drawCenterString(warnModes[i], bx + 41, e_rowY(3) + 15);
     }
     for (int i = 0; i < 6; i++) {
         int bx = 450 + i * 46;
         canvas.fillCircle(bx + 16, e_rowY(3) + 20, 16, cdColor(cols[i]));
         if (g.warnColor == i) canvas.drawCircle(bx + 16, e_rowY(3) + 20, 20, C_TEXT_WHITE);
+        else                       canvas.drawCircle(bx + 16, e_rowY(3) + 20, 20, TFT_BLACK);
     }
 
     // Row 4: decimals
-    canvas.setFont(&fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
+    canvas.setFont(fonts::Font2); canvas.setTextColor(C_TEXT_MUTED);
     canvas.drawString("DEC", 34, e_rowY(4) + 12);
     for (int i = 0; i < 3; i++) {
         int bx = 160 + i * 70;
@@ -507,13 +547,13 @@ void renderCustomDashEditor() {
         snprintf(buf, sizeof(buf), "%d", i);
         canvas.fillRoundRect(bx, e_rowY(4), 62, 40, 6, on ? C_TEXT_CYAN : C_CARD_BG);
         canvas.drawRoundRect(bx, e_rowY(4), 62, 40, 6, on ? C_TEXT_WHITE : C_CARD_BORDER);
-        canvas.setTextColor(on ? TFT_BLACK : C_TEXT_MUTED); canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(on ? TFT_BLACK : C_TEXT_MUTED); canvas.setFont(fonts::Font2);
         canvas.drawCenterString(buf, bx + 31, e_rowY(4) + 12);
     }
 
     // bottom: DONE
     canvas.fillRoundRect(436, 412, 352, 44, 6, C_TRD_ORANGE);
-    canvas.setTextColor(TFT_BLACK); canvas.setFont(&fonts::Font4);
+    canvas.setTextColor(TFT_BLACK); canvas.setFont(fonts::Font4);
     canvas.drawCenterString("DONE", 612, 420);
 }
 
@@ -579,7 +619,9 @@ static void cdEditorHit(int x, int y) {
     // warn high -/+ (0 toggles off)
     if (inRect(x, y, 160, e_rowY(2), 40, 40)) {
         if (g.warnHi <= -1e29f) g.warnHi = g.maxVal; else g.warnHi -= step;
-        if (g.warnHi <= g.minVal + step * 0.5f) g.warnHi = -1e30f; cdSavePrefs(); return;
+        if (g.warnHi <= g.minVal + step * 0.5f) g.warnHi = -1e30f;
+        cdSavePrefs();
+        return;
     }
     if (inRect(x, y, 460, e_rowY(2), 20, 40)) {
         if (g.warnHi <= -1e29f) g.warnHi = g.maxVal + step; else g.warnHi += step; cdSavePrefs(); return;
@@ -635,16 +677,20 @@ bool cdHandleDrag(int x, int y) {
     if (g_cdDragMode == 1) {
         int cx, cy; cdPixelToCell(x, y, cx, cy);
         int nx = cx - g_cdDragOffX, ny = cy - g_cdDragOffY;
-        if (nx < 0) nx = 0; if (nx + g.w > CD_COLS) nx = CD_COLS - g.w;
-        if (ny < 0) ny = 0; if (ny + g.h > CD_ROWS) ny = CD_ROWS - g.h;
+        if (nx < 0) nx = 0;
+        if (nx + g.w > CD_COLS) nx = CD_COLS - g.w;
+        if (ny < 0) ny = 0;
+        if (ny + g.h > CD_ROWS) ny = CD_ROWS - g.h;
         // only move to free space
         if (!cdOverlap(g_cdDragIdx, nx, ny, g.w, g.h)) { g.x = nx; g.y = ny; }
     } else if (g_cdDragMode == 2) {
         int cx, cy; cdPixelToCell(x + g_cdDragOffX, y + g_cdDragOffY, cx, cy);
         int nx = g.x, ny = g.y;
         int nw = (cx + 1) - g.x, nh = (cy + 1) - g.y;
-        if (nw < 1) nw = 1; if (nw > CD_COLS - g.x) nw = CD_COLS - g.x;
-        if (nh < 1) nh = 1; if (nh > CD_ROWS - g.y) nh = CD_ROWS - g.y;
+        if (nw < 1) nw = 1;
+        if (nw > CD_COLS - g.x) nw = CD_COLS - g.x;
+        if (nh < 1) nh = 1;
+        if (nh > CD_ROWS - g.y) nh = CD_ROWS - g.y;
         if (!cdOverlap(g_cdDragIdx, nx, ny, nw, nh)) { g.w = nw; g.h = nh; }
     }
     return true;
