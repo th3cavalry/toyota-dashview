@@ -2173,6 +2173,11 @@ void renderSystem(bool forceFull = false) {
         s_lastSysTick = millis();
     } else if (millis() - s_lastSysTick >= 1000) {
         s_lastSysTick = millis();
+
+        char stamp[24];
+        bool rtcOk = rtcStamp(stamp, sizeof(stamp));
+
+        canvas.beginOffscreen();
         drawHeaderBar("HARDWARE DIAGNOSTICS", false);
 
         char buf[64];
@@ -2191,15 +2196,15 @@ void renderSystem(bool forceFull = false) {
         canvas.drawString(buf, 340, startRowY + 4 * rowStep);
 
         // Update RTC (Row 7)
-        char stamp[24];
         canvas.fillRect(340, startRowY + 7 * rowStep - 2, 420, 28, C_CARD_BG);
-        if (rtcStamp(stamp, sizeof(stamp))) {
+        if (rtcOk) {
             canvas.setTextColor(C_GREEN_OK);
             canvas.drawString(stamp, 340, startRowY + 7 * rowStep);
         } else {
             canvas.setTextColor(C_TRD_RED);
             canvas.drawString("NOT RESPONDING", 340, startRowY + 7 * rowStep);
         }
+        canvas.endOffscreen();
     }
 }
 
@@ -2478,6 +2483,8 @@ void updateDisplay() {
 
     if (screenChanged) {
         canvas.endOffscreen();
+    } else {
+        canvas.syncCache();
     }
 }
 

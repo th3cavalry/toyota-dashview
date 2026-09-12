@@ -10,6 +10,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
+#include "esp_cache.h"
 #include "driver/gpio.h"
 #include "esp32-hal-gpio.h"
 #include <esp32-hal.h>
@@ -147,7 +148,8 @@ void LVGLCanvas::endOffscreen() {
             dst[i] = src[i];
         }
         _fb = _hw_fb;
-        _dirty = true;
+        _dirty = false;
+        esp_cache_msync(_hw_fb, (size_t)_fbw * _fbh * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
     }
 }
 
@@ -164,7 +166,15 @@ void LVGLCanvas::endOffscreenRows(int y, int h) {
             dst[i] = src[i];
         }
         _fb = _hw_fb;
-        _dirty = true;
+        _dirty = false;
+        esp_cache_msync((void *)dst, (size_t)_fbw * h * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    }
+}
+
+void LVGLCanvas::syncCache() {
+    if (_hw_fb && _dirty) {
+        esp_cache_msync(_hw_fb, (size_t)_fbw * _fbh * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        _dirty = false;
     }
 }
 
