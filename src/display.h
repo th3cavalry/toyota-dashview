@@ -50,6 +50,7 @@ public:
     // Staging / Offscreen rendering methods
     void beginOffscreen();
     void endOffscreen();
+    void endOffscreenRows(int y, int h);
     bool isOffscreen() const { return _fb == _staging_fb; }
 
     lv_display_t* display() const { return _disp; }

@@ -1529,9 +1529,8 @@ void renderDashboard(bool forceFull = false) {
     }
 }
 
-// Floating Overlay Sub-Screen: Raw Packet Monitor Modal
-void renderRawSnifferModal() {
-    // Header Bar
+// Static header and buttons for Raw Sniffer Modal
+static void drawRawSnifferHeader() {
     canvas.fillRect(0, 0, UI_W, UI_HEADER_H, canvas.color565(12, 15, 22));
     canvas.fillRect(0, 0, 6, UI_HEADER_H, C_TRD_ORANGE);
     canvas.fillRect(6, 0, 6, UI_HEADER_H, C_TRD_RED);
@@ -1540,8 +1539,20 @@ void renderRawSnifferModal() {
     canvas.setTextColor(C_TEXT_WHITE, canvas.color565(12, 15, 22));
     canvas.setFont(fonts::Font4);
     canvas.drawString("RAW CAN STREAM", 28, 10);
+    canvas.drawFastHLine(0, UI_HEADER_H - 1, UI_W, C_CARD_BORDER);
 
-    // Status Pill: STREAMING (Cyan) vs PAUSED (Orange)
+    // Table Column Header
+    canvas.fillRect(12, 50, 776, 26, C_CARD_INNER);
+    canvas.drawRoundRect(12, 50, 776, 26, 4, C_CARD_BORDER);
+    canvas.setFont(fonts::Font2);
+    canvas.setTextColor(C_TEXT_MUTED);
+    canvas.drawString("CAN ID", 24, 55);
+    canvas.drawString("DLC", 150, 55);
+    canvas.drawString("HEX PAYLOAD (BYTES 0..7)", 230, 55);
+}
+
+static void drawRawSnifferStatusPill() {
+    canvas.fillRect(640, 6, 150, 32, canvas.color565(12, 15, 22));
     if (isSnifferPaused) {
         canvas.fillRoundRect(650, 7, 136, 30, 5, canvas.color565(80, 45, 10));
         canvas.drawRoundRect(650, 7, 136, 30, 5, C_TRD_ORANGE);
@@ -1555,25 +1566,45 @@ void renderRawSnifferModal() {
         canvas.setFont(fonts::Font2);
         canvas.drawCenterString("STREAMING", 713, 14);
     }
+}
 
-    canvas.drawFastHLine(0, UI_HEADER_H - 1, UI_W, C_CARD_BORDER);
+static void drawRawSnifferPauseButton() {
+    int botY = 412;
+    uint16_t pauseBg = isSnifferPaused ? C_TRD_ORANGE : canvas.color565(25, 35, 52);
+    uint16_t pauseBorder = isSnifferPaused ? canvas.color565(255, 180, 50) : canvas.color565(60, 100, 160);
+    canvas.fillRoundRect(12, botY, 180, 44, 6, pauseBg);
+    canvas.drawRoundRect(12, botY, 180, 44, 6, pauseBorder);
+    canvas.setTextColor(isSnifferPaused ? TFT_BLACK : C_TEXT_WHITE);
+    canvas.setFont(fonts::Font4);
+    canvas.drawCenterString(isSnifferPaused ? "RESUME" : "PAUSE", 102, botY + 8);
+}
 
-    // Table Column Header
-    canvas.fillRect(12, 50, 776, 26, C_CARD_INNER);
-    canvas.drawRoundRect(12, 50, 776, 26, 4, C_CARD_BORDER);
-    canvas.setFont(fonts::Font2);
+static void drawRawSnifferActionDeck() {
+    drawRawSnifferPauseButton();
+
+    // 2. [ CLEAR ] Button (x: 204..364)
+    int botY = 412;
+    canvas.fillRoundRect(204, botY, 160, 44, 6, canvas.color565(30, 32, 42));
+    canvas.drawRoundRect(204, botY, 160, 44, 6, C_CARD_BORDER);
     canvas.setTextColor(C_TEXT_MUTED);
-    canvas.drawString("CAN ID", 24, 55);
-    canvas.drawString("DLC", 150, 55);
-    canvas.drawString("HEX PAYLOAD (BYTES 0..7)", 230, 55);
+    canvas.setFont(fonts::Font4);
+    canvas.drawCenterString("CLEAR", 284, botY + 8);
 
-    // Render Frame Rows (up to 10 rows)
+    // 3. [ BACK / CLOSE ] Button (x: 376..788)
+    canvas.fillRoundRect(376, botY, 412, 44, 6, C_TRD_RED);
+    canvas.drawRoundRect(376, botY, 412, 44, 6, canvas.color565(255, 100, 100));
+    canvas.setTextColor(C_TEXT_WHITE);
+    canvas.setFont(fonts::Font4);
+    canvas.drawCenterString("BACK / CLOSE", 582, botY + 8);
+}
+
+static void drawRawSnifferRows() {
     char buf[96];
     int rowY = 80;
     for (int i = 0; i < 10; i++) {
         int idx = (snifferHead - 1 - i + SNIFFER_HISTORY_SIZE) % SNIFFER_HISTORY_SIZE;
         uint16_t rowBg = (i % 2 == 0) ? C_CARD_BG : canvas.color565(22, 28, 40);
-        canvas.fillRoundRect(12, rowY, 776, 30, 4, rowBg);
+        canvas.fillRect(12, rowY, 776, 30, rowBg);
 
         if (snifferHistory[idx].id != 0 || snifferHistory[idx].dlc != 0) {
             snprintf(buf, sizeof(buf), "0x%03lX", (unsigned long)snifferHistory[idx].id);
@@ -1603,38 +1634,52 @@ void renderRawSnifferModal() {
 
         rowY += 32;
     }
+}
 
-    // Bottom Action Deck (Pause, Clear, Back)
-    int botY = 412;
+// Floating Overlay Sub-Screen: Raw Packet Monitor Modal
+void renderRawSnifferModal(bool forceFull = false) {
+    static bool s_lastPaused = false;
+    static int s_lastHead = -1;
+    static unsigned long s_lastRenderTime = 0;
 
-    // 1. [ PAUSE / RESUME ] Button (x: 12..192)
-    uint16_t pauseBg = isSnifferPaused ? C_TRD_ORANGE : canvas.color565(25, 35, 52);
-    uint16_t pauseBorder = isSnifferPaused ? canvas.color565(255, 180, 50) : canvas.color565(60, 100, 160);
-    canvas.fillRoundRect(12, botY, 180, 44, 6, pauseBg);
-    canvas.drawRoundRect(12, botY, 180, 44, 6, pauseBorder);
-    canvas.setTextColor(isSnifferPaused ? TFT_BLACK : C_TEXT_WHITE);
-    canvas.setFont(fonts::Font4);
-    canvas.drawCenterString(isSnifferPaused ? "RESUME" : "PAUSE", 102, botY + 8);
+    if (forceFull) {
+        s_lastPaused = isSnifferPaused;
+        s_lastHead = snifferHead;
+        s_lastRenderTime = millis();
 
-    // 2. [ CLEAR ] Button (x: 204..364)
-    canvas.fillRoundRect(204, botY, 160, 44, 6, canvas.color565(30, 32, 42));
-    canvas.drawRoundRect(204, botY, 160, 44, 6, C_CARD_BORDER);
-    canvas.setTextColor(C_TEXT_MUTED);
-    canvas.setFont(fonts::Font4);
-    canvas.drawCenterString("CLEAR", 284, botY + 8);
+        drawRawSnifferHeader();
+        drawRawSnifferStatusPill();
+        drawRawSnifferActionDeck();
+        drawRawSnifferRows();
+        return;
+    }
 
-    // 3. [ BACK / CLOSE ] Button (x: 376..788)
-    canvas.fillRoundRect(376, botY, 412, 44, 6, C_TRD_RED);
-    canvas.drawRoundRect(376, botY, 412, 44, 6, canvas.color565(255, 100, 100));
-    canvas.setTextColor(C_TEXT_WHITE);
-    canvas.setFont(fonts::Font4);
-    canvas.drawCenterString("BACK / CLOSE", 582, botY + 8);
+    if (isSnifferPaused != s_lastPaused) {
+        s_lastPaused = isSnifferPaused;
+        drawRawSnifferStatusPill();
+        drawRawSnifferPauseButton();
+    }
+
+    if (isSnifferPaused) {
+        return;
+    }
+
+    unsigned long now = millis();
+    if (now - s_lastRenderTime < 100 || snifferHead == s_lastHead) {
+        return;
+    }
+    s_lastRenderTime = now;
+    s_lastHead = snifferHead;
+
+    canvas.beginOffscreen();
+    drawRawSnifferRows();
+    canvas.endOffscreenRows(80, 320);
 }
 
 // Page 1: Live CAN Sniffer & Traffic Monitor
 void renderSniffer(bool forceFull = false) {
     if (isRawSnifferModalOpen) {
-        renderRawSnifferModal();
+        renderRawSnifferModal(forceFull);
         return;
     }
 
@@ -2556,6 +2601,7 @@ void handleTouch() {
                     if (touchLastX >= 12 && touchLastX <= 192 && touchLastY >= 412 && touchLastY <= 456) {
                         isSnifferPaused = !isSnifferPaused;
                         Serial.printf("[SNIFFER MODAL] Toggled Pause -> %s\n", isSnifferPaused ? "PAUSED" : "STREAMING");
+                        updateDisplay();
                         return;
                     }
                     // Button 2: [ CLEAR ] (x: 204..364, y: 412..456)
@@ -2566,12 +2612,16 @@ void handleTouch() {
                         }
                         snifferHead = 0;
                         Serial.println("[SNIFFER MODAL] Cleared history buffer.");
+                        canvas.beginOffscreen();
+                        drawRawSnifferRows();
+                        canvas.endOffscreenRows(80, 320);
                         return;
                     }
                     // Button 3: [ BACK / CLOSE ] (x: 376..788, y: 412..456)
                     else if (touchLastX >= 376 && touchLastX <= 788 && touchLastY >= 412 && touchLastY <= 456) {
                         isRawSnifferModalOpen = false;
                         Serial.println("[SNIFFER MODAL] Closed modal -> Returning to Sniffer Page.");
+                        updateDisplay();
                         return;
                     }
                     return;
@@ -2926,10 +2976,24 @@ void loop() {
             vehicleData.timingDeg = 16.0f;
             currentPPS = 185.0f;
             packetCount = 84210;
+            for (int i = 0; i < 10; i++) {
+                snifferHistory[snifferHead].id = 0x0B4 + i * 0x10;
+                snifferHistory[snifferHead].dlc = 8;
+                snifferHistory[snifferHead].timestamp = millis();
+                for (int b = 0; b < 8; b++) snifferHistory[snifferHead].data[b] = (uint8_t)(i * 16 + b);
+                snifferHead = (snifferHead + 1) % SNIFFER_HISTORY_SIZE;
+            }
             wakeScreen();
             lastUserActivityTime = millis();
             updateDisplay();
             Serial.println("[MOCK] Injected active driving telemetry");
+        } else if (cmd == 'x') {
+            currentScreen = SCREEN_SNIFFER;
+            isRawSnifferModalOpen = !isRawSnifferModalOpen;
+            wakeScreen();
+            lastUserActivityTime = millis();
+            updateDisplay();
+            Serial.printf("[MODAL] Raw sniffer modal = %d\n", isRawSnifferModalOpen);
         } else if (cmd == 'z') {
             vehicleData.rpm = 0;
             vehicleData.speedMph = 0;

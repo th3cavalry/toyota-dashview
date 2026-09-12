@@ -67,17 +67,17 @@ bool LVGLCanvas::init(uint16_t w, uint16_t h, uint32_t pclk_hz) {
     cfg.timings.pclk_hz = pclk_hz;
     cfg.timings.h_res = (uint32_t)w;
     cfg.timings.v_res = (uint32_t)h;
-    cfg.timings.hsync_pulse_width = 4;
-    cfg.timings.hsync_back_porch = 8;
-    cfg.timings.hsync_front_porch = 8;
-    cfg.timings.vsync_pulse_width = 4;
-    cfg.timings.vsync_back_porch = 16;
-    cfg.timings.vsync_front_porch = 16;
-    cfg.timings.flags.hsync_idle_low = 1;
-    cfg.timings.flags.vsync_idle_low = 1;
+    cfg.timings.hsync_pulse_width = 10;
+    cfg.timings.hsync_back_porch = 10;
+    cfg.timings.hsync_front_porch = 20;
+    cfg.timings.vsync_pulse_width = 10;
+    cfg.timings.vsync_back_porch = 10;
+    cfg.timings.vsync_front_porch = 10;
+    cfg.timings.flags.hsync_idle_low = 0;
+    cfg.timings.flags.vsync_idle_low = 0;
     cfg.timings.flags.de_idle_high = 0;
     cfg.timings.flags.pclk_active_neg = 1;
-    cfg.timings.flags.pclk_idle_high = 1;
+    cfg.timings.flags.pclk_idle_high = 0;
     for (int i = 0; i < 16; i++) cfg.data_gpio_nums[i] = data_gpio[i];
     cfg.de_gpio_num = 5;
     cfg.hsync_gpio_num = 46;
@@ -143,6 +143,23 @@ void LVGLCanvas::endOffscreen() {
         uint32_t *dst = (uint32_t *)_hw_fb;
         const uint32_t *src = (const uint32_t *)_staging_fb;
         size_t count32 = ((size_t)_fbw * _fbh) / 2;
+        for (size_t i = 0; i < count32; i++) {
+            dst[i] = src[i];
+        }
+        _fb = _hw_fb;
+        _dirty = true;
+    }
+}
+
+void LVGLCanvas::endOffscreenRows(int y, int h) {
+    if (_staging_fb && _hw_fb && _fb == _staging_fb) {
+        if (y < 0) { h += y; y = 0; }
+        if (y + h > (int)_fbh) h = _fbh - y;
+        if (h <= 0) { _fb = _hw_fb; return; }
+        int buf_y = _flip ? ((int)_fbh - (y + h)) : y;
+        uint32_t *dst = (uint32_t *)_hw_fb + ((size_t)buf_y * _fbw) / 2;
+        const uint32_t *src = (const uint32_t *)_staging_fb + ((size_t)buf_y * _fbw) / 2;
+        size_t count32 = ((size_t)_fbw * h) / 2;
         for (size_t i = 0; i < count32; i++) {
             dst[i] = src[i];
         }
