@@ -67,13 +67,17 @@ bool LVGLCanvas::init(uint16_t w, uint16_t h, uint32_t pclk_hz) {
     cfg.timings.pclk_hz = pclk_hz;
     cfg.timings.h_res = (uint32_t)w;
     cfg.timings.v_res = (uint32_t)h;
-    cfg.timings.hsync_pulse_width = 10;
-    cfg.timings.hsync_back_porch = 10;
-    cfg.timings.hsync_front_porch = 20;
-    cfg.timings.vsync_pulse_width = 10;
-    cfg.timings.vsync_back_porch = 10;
-    cfg.timings.vsync_front_porch = 10;
-    cfg.timings.flags.pclk_active_neg = 0;
+    cfg.timings.hsync_pulse_width = 4;
+    cfg.timings.hsync_back_porch = 8;
+    cfg.timings.hsync_front_porch = 8;
+    cfg.timings.vsync_pulse_width = 4;
+    cfg.timings.vsync_back_porch = 16;
+    cfg.timings.vsync_front_porch = 16;
+    cfg.timings.flags.hsync_idle_low = 1;
+    cfg.timings.flags.vsync_idle_low = 1;
+    cfg.timings.flags.de_idle_high = 0;
+    cfg.timings.flags.pclk_active_neg = 1;
+    cfg.timings.flags.pclk_idle_high = 1;
     for (int i = 0; i < 16; i++) cfg.data_gpio_nums[i] = data_gpio[i];
     cfg.de_gpio_num = 5;
     cfg.hsync_gpio_num = 46;
@@ -192,9 +196,9 @@ void LVGLCanvas::px_blend(int x, int y, uint16_t fg, uint8_t alpha) {
     uint32_t bg_g = (bg >> 5)  & 0x3F;
     uint32_t bg_b =  bg        & 0x1F;
 
-    uint32_t r = (fg_r * alpha + bg_r * (255 - alpha)) / 255;
-    uint32_t g = (fg_g * alpha + bg_g * (255 - alpha)) / 255;
-    uint32_t b = (fg_b * alpha + bg_b * (255 - alpha)) / 255;
+    uint32_t r = (fg_r * alpha + bg_r * (255 - alpha) + 128) / 255;
+    uint32_t g = (fg_g * alpha + bg_g * (255 - alpha) + 128) / 255;
+    uint32_t b = (fg_b * alpha + bg_b * (255 - alpha) + 128) / 255;
 
     *p = (uint16_t)((r << 11) | (g << 5) | b);
     _dirty = true;
@@ -483,6 +487,8 @@ void LVGLCanvas::glyph(const lv_font_t *f, uint32_t cp, int32_t &x, int32_t y) {
         x += dsc.adv_w;
         return;
     }
+
+    stride = draw_buf->header.stride;
 
     int32_t bw = dsc.box_w;
     int32_t bh = dsc.box_h;
