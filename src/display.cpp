@@ -223,6 +223,20 @@ void LVGLCanvas::fillScreen(uint16_t c) {
     for (size_t i = 0; i < count; i++) p32[i] = c32;
     _dirty = true;
 }
+
+void LVGLCanvas::fillContentArea(uint16_t c) {
+    if (!_fb) return;
+    _datum = 0;
+    uint32_t c32 = ((uint32_t)c << 16) | c;
+    uint32_t *p32 = (uint32_t *)_fb;
+    size_t count = ((size_t)_fbw * 440) / 2;
+    if (_flip) {
+        p32 += ((size_t)_fbw * 40) / 2;
+    }
+    for (size_t i = 0; i < count; i++) p32[i] = c32;
+    _dirty = true;
+}
+
 void LVGLCanvas::fillRect(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t c) {
     rect(x, y, w, h, c);
 }
@@ -248,7 +262,18 @@ void LVGLCanvas::drawFastHLine(int32_t x, int32_t y, int32_t l, uint16_t c) {
 }
 
 void LVGLCanvas::drawFastVLine(int32_t x, int32_t y, int32_t h, uint16_t c) {
-    for (int32_t yy = y; yy < y + h; yy++) px(x, yy, c);
+    if (unsigned(x) > _fbw - 1 || !_fb) return;
+    if (y < 0) { h += y; y = 0; }
+    if (y + h > (int)_fbh) h = _fbh - y;
+    if (h <= 0) return;
+    int dx = _flip ? _fbw - 1 - x : x;
+    int dy = _flip ? _fbh - 1 - y : y;
+    int stride = _flip ? -(int)_fbw : (int)_fbw;
+    uint16_t *p = (uint16_t *)_fb + (size_t)dy * _fbw + dx;
+    for (int32_t i = 0; i < h; i++) {
+        *p = c;
+        p += stride;
+    }
     _dirty = true;
 }
 

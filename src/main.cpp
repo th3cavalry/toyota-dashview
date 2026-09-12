@@ -1166,16 +1166,15 @@ void renderDashboard(bool forceFull = false) {
         // Active RPM Fill
         int rpmW = map(constrain(vehicleData.rpm, 0, 6000), 0, 6000, 0, trackW - 4);
         if (rpmW > 0) {
-            for (int i = 0; i < rpmW; i++) {
-                uint16_t barColor;
-                if (i < 436) {
-                    barColor = C_TEXT_CYAN;     // 0..3500 RPM Ice Cyan
-                } else if (i < 648) {
-                    barColor = C_TRD_ORANGE;    // 3500..5200 RPM Heritage Orange
-                } else {
-                    barColor = C_TRD_RED;       // 5200..6000 RPM TRD Redline
-                }
-                canvas.drawFastVLine(trackX + 2 + i, trackY + 2, trackH - 4, barColor);
+            int w1 = std::min(rpmW, 436);
+            if (w1 > 0) canvas.fillRect(trackX + 2, trackY + 2, w1, trackH - 4, C_TEXT_CYAN);
+            if (rpmW > 436) {
+                int w2 = std::min(rpmW - 436, 648 - 436);
+                if (w2 > 0) canvas.fillRect(trackX + 2 + 436, trackY + 2, w2, trackH - 4, C_TRD_ORANGE);
+            }
+            if (rpmW > 648) {
+                int w3 = rpmW - 648;
+                if (w3 > 0) canvas.fillRect(trackX + 2 + 648, trackY + 2, w3, trackH - 4, C_TRD_RED);
             }
         }
     }
@@ -2418,8 +2417,8 @@ void updateDisplay() {
         if (isModal) {
             canvas.fillScreen(C_DARK_BG);
         } else {
-            // Clear only content area (0..440) — leaves bottom navbar completely intact!
-            canvas.fillRect(0, 0, UI_W, UI_H - UI_NAVBAR_H, C_DARK_BG);
+            // Ultra-fast 32-bit burst clear of content area (0..440) — leaves navbar intact!
+            canvas.fillContentArea(C_DARK_BG);
             drawBottomNavBar(isFirst || modalJustClosed || orientationChanged);
         }
     }
@@ -2456,6 +2455,8 @@ void nextScreen() {
     if (isPidConfigOpen) return;
     currentScreen = static_cast<DisplayScreen>((currentScreen + 1) % SCREEN_COUNT);
     wakeScreen();
+    lastUserActivityTime = millis();
+    updateDisplay();
     Serial.printf("[SWIPE] Switched to Next Screen -> Page %d\n", currentScreen);
 }
 
@@ -2463,6 +2464,8 @@ void prevScreen() {
     if (isPidConfigOpen) return;
     currentScreen = static_cast<DisplayScreen>((currentScreen - 1 + SCREEN_COUNT) % SCREEN_COUNT);
     wakeScreen();
+    lastUserActivityTime = millis();
+    updateDisplay();
     Serial.printf("[SWIPE] Switched to Prev Screen <- Page %d\n", currentScreen);
 }
 
@@ -2517,10 +2520,10 @@ void handleTouch() {
             return;
         }
 
-        // 2. Stationary Button / Card Tap (Minimal movement < 30px, duration < 600ms)
-        if (abs(deltaX) < 30 && abs(deltaY) < 30 && duration < 600) {
+        // 2. Stationary Button / Card Tap (Minimal movement < 35px, duration < 1200ms)
+        if (abs(deltaX) < 35 && abs(deltaY) < 35 && duration < 1200) {
             // Check Bottom Navigation Bar first (< PREV, NEXT >, or page dots)
-            if (!isPidConfigOpen && !isRawSnifferModalOpen && g_cdEditorKind == CD_EDIT_NONE && touchLastY >= (UI_H - UI_NAVBAR_H)) {
+            if (!isPidConfigOpen && !isRawSnifferModalOpen && g_cdEditorKind == CD_EDIT_NONE && touchLastY >= (UI_H - UI_NAVBAR_H - 15)) {
                 if (touchLastX <= 220) {
                     prevScreen();
                     return;
@@ -2535,6 +2538,8 @@ void handleTouch() {
                         if (abs(touchLastX - dx) <= 16) {
                             currentScreen = static_cast<DisplayScreen>(i);
                             wakeScreen();
+                            lastUserActivityTime = millis();
+                            updateDisplay();
                             Serial.printf("[NAVBAR] Tapped Page %d\n", currentScreen);
                             return;
                         }

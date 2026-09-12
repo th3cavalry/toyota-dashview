@@ -25,6 +25,7 @@ public:
     void setTextDatum(uint8_t datum);
     void setTextPadding(uint16_t pad);
     void fillScreen(uint16_t c);
+    void fillContentArea(uint16_t c);
     void fillRect(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t c);
     void drawRect(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t c);
     void drawLine(int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint16_t c);

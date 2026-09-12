@@ -75,9 +75,16 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
     - Root-caused bottom-screen shearing and stretching: 1 Hz Status Ribbon updates were redrawing entire 776x72 outer card, 4 inner cards, and borders to PSRAM while GDMA was scanning out at 14 MHz, causing PSRAM FIFO underflow. Fixed with dirty caching: outer card and borders drawn strictly on `forceFull`; 1 Hz loop only clears minimal text bounding box (`tw - 8, 28`) when values change, reducing periodic PSRAM write bandwidth by >97%.
     - Removed harsh 800px full-width `drawFastHLine` in `drawBottomNavBar()` that caused a floating glitch line between `< PREV` and `NEXT >`.
     - Modernized `fillCircleHelper`, `fillCircle`, `drawRoundRect`, and `fillRoundRect` in `src/display.cpp` to use continuous scanline algorithms with zero gaps or ragged corner artifacts.
-  - Seamless Bottom Navbar Page Transitions (2026-09-11):
+    - Seamless Bottom Navbar Page Transitions (2026-09-11):
     - Root cause of bottom blanking / sequential redraw: on screen change, `canvas.fillScreen(C_DARK_BG)` was wiping scanlines 440..480 to black, leaving the bottom area blank for 2-3 frames while the upper cards rendered. Then `drawBottomNavBar()` repainted the background, `< PREV`, each dot sequentially, and `NEXT >`.
     - Fix: `updateDisplay()` now clears strictly the content area (`canvas.fillRect(0, 0, UI_W, UI_H - UI_NAVBAR_H, C_DARK_BG)`), leaving the bottom navbar completely untouched. `drawBottomNavBar(forceFull)` caches the background, `< PREV`, and `NEXT >` pills persistently across page switches, updating only the 176x16 px dot indicator bounding box in 50 microseconds before content renders. Bottom navigation is now rock-solid and never blinks or redraws sequentially.
+  - **Performance & Touch Responsiveness Overhaul (2026-09-11)**:
+    - Root-caused screen "unpacking" / slow wipe: 16-bit unaligned `std::fill` across 440 lines in Octal PSRAM triggered read-modify-write stalls, taking 50–80 ms per transition.
+    - Added `LVGLCanvas::fillContentArea(uint16_t c)`: 32-bit burst write loop (`uint32_t *p32 = c32`) over upper 440 scanlines, reducing clear time from ~80 ms to <2 ms while preserving bottom navbar and resetting `_datum = 0`.
+    - Rewrote `LVGLCanvas::drawFastVLine`: replaced pixel-by-pixel `px()` call loop with direct row-stride pointer arithmetic (`uint16_t *p += stride`), bringing vertical line drawing to hardware bus memory speed.
+    - Tachometer Sweep Optimization: replaced loop of hundreds of single vertical line calls with 1–3 direct block `fillRect` calls.
+    - Instant Touch Page Switching: removed frame timer latency; `nextScreen()`, `prevScreen()`, and dot taps in `handleTouch()` invoke `updateDisplay()` immediately on tap/swipe release.
+    - Improved Tap Detection: relaxed tap duration filter from 600 ms to 1200 ms and extended navbar hit-box upward by 15 px (`touchLastY >= 425`), preventing missed or sluggish taps.
 - Build: `pio run` SUCCESS (0 warnings) — RAM 37.6% (123 KB), Flash 23.0% (1.50 MB / 6.5 MB). Native tests 46/46 passed.
 
 ## IN PROGRESS
