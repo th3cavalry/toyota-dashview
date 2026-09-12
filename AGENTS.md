@@ -71,6 +71,10 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
   - Direct On-Device Screenshot Capture (`tools/capture_screenshot.py`): Added serial framebuffer streaming (`'c'` command dumps 768 KB raw RGB565 over USB CDC in <1s), enabling direct pixel-accurate PNG captures from the physical hardware.
   - Text Datum Alignment Bug Fixed: Discovered and resolved persistent `_datum = 1` from boot splash which was erroneously shifting all `drawString` calls left by half their width (causing truncation of left characters and multi-column overlap). Enforced `_datum = 0` default on screen fills and headers.
   - Build & Bench Verification: Clean compilation with 0 compiler warnings/errors (RAM 37.6%, Flash 23.0%), native tests 46/46 passed, flashed and verified on physical Waveshare 4.3B hardware via `/dev/ttyACM0`.
+  - PSRAM Contention & Lower Display Artifacts Eliminated (2026-09-11):
+    - Root-caused bottom-screen shearing and stretching: 1 Hz Status Ribbon updates were redrawing entire 776x72 outer card, 4 inner cards, and borders to PSRAM while GDMA was scanning out at 14 MHz, causing PSRAM FIFO underflow. Fixed with dirty caching: outer card and borders drawn strictly on `forceFull`; 1 Hz loop only clears minimal text bounding box (`tw - 8, 28`) when values change, reducing periodic PSRAM write bandwidth by >97%.
+    - Removed harsh 800px full-width `drawFastHLine` in `drawBottomNavBar()` that caused a floating glitch line between `< PREV` and `NEXT >`.
+    - Modernized `fillCircleHelper`, `fillCircle`, `drawRoundRect`, and `fillRoundRect` in `src/display.cpp` to use continuous scanline algorithms with zero gaps or ragged corner artifacts.
 - Build: `pio run` SUCCESS (0 warnings) — RAM 37.6% (123 KB), Flash 23.0% (1.50 MB / 6.5 MB). Native tests 46/46 passed.
 
 ## IN PROGRESS
