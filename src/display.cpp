@@ -67,17 +67,13 @@ bool LVGLCanvas::init(uint16_t w, uint16_t h, uint32_t pclk_hz) {
     cfg.timings.pclk_hz = pclk_hz;
     cfg.timings.h_res = (uint32_t)w;
     cfg.timings.v_res = (uint32_t)h;
-    cfg.timings.hsync_pulse_width = 4;
-    cfg.timings.hsync_back_porch = 8;
-    cfg.timings.hsync_front_porch = 8;
-    cfg.timings.vsync_pulse_width = 4;
-    cfg.timings.vsync_back_porch = 16;
-    cfg.timings.vsync_front_porch = 16;
-    cfg.timings.flags.hsync_idle_low = 1;
-    cfg.timings.flags.vsync_idle_low = 1;
-    cfg.timings.flags.de_idle_high = 0;
-    cfg.timings.flags.pclk_active_neg = 1;
-    cfg.timings.flags.pclk_idle_high = 1;
+    cfg.timings.hsync_pulse_width = 10;
+    cfg.timings.hsync_back_porch = 10;
+    cfg.timings.hsync_front_porch = 20;
+    cfg.timings.vsync_pulse_width = 10;
+    cfg.timings.vsync_back_porch = 10;
+    cfg.timings.vsync_front_porch = 10;
+    cfg.timings.flags.pclk_active_neg = 0;
     for (int i = 0; i < 16; i++) cfg.data_gpio_nums[i] = data_gpio[i];
     cfg.de_gpio_num = 5;
     cfg.hsync_gpio_num = 46;
@@ -106,9 +102,18 @@ bool LVGLCanvas::init(uint16_t w, uint16_t h, uint32_t pclk_hz) {
         Serial.printf("[DISPLAY] esp_lcd_rgb_panel_get_frame_buffer failed: 0x%x, fb0=%p\n", err, fb0);
         return false;
     }
-    _fb = (uint8_t *)fb0;
-    Serial.printf("[DISPLAY] PSRAM frame buffer ready: %p (%u bytes)\n", _fb, (unsigned)(w * h * 2));
-    memset(_fb, 0, (size_t)w * h * 2);
+    _hw_fb = (uint8_t *)fb0;
+    _fb = _hw_fb;
+    Serial.printf("[DISPLAY] PSRAM hardware frame buffer ready: %p (%u bytes)\n", _hw_fb, (unsigned)(w * h * 2));
+    memset(_hw_fb, 0, (size_t)w * h * 2);
+
+    _staging_fb = (uint8_t *)heap_caps_malloc((size_t)w * h * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (_staging_fb) {
+        Serial.printf("[DISPLAY] PSRAM staging frame buffer ready: %p (%u bytes)\n", _staging_fb, (unsigned)(w * h * 2));
+        memset(_staging_fb, 0, (size_t)w * h * 2);
+    } else {
+        Serial.println("[DISPLAY] WARNING: Failed to allocate PSRAM staging buffer!");
+    }
 
     static bool lv_inited = false;
     if (!lv_inited) {
@@ -121,6 +126,25 @@ bool LVGLCanvas::init(uint16_t w, uint16_t h, uint32_t pclk_hz) {
     _disp = disp;
 
     return true;
+}
+
+void LVGLCanvas::beginOffscreen() {
+    if (_staging_fb) {
+        _fb = _staging_fb;
+    }
+}
+
+void LVGLCanvas::endOffscreen() {
+    if (_staging_fb && _hw_fb && _fb == _staging_fb) {
+        uint32_t *dst = (uint32_t *)_hw_fb;
+        const uint32_t *src = (const uint32_t *)_staging_fb;
+        size_t count32 = ((size_t)_fbw * _fbh) / 2;
+        for (size_t i = 0; i < count32; i++) {
+            dst[i] = src[i];
+        }
+        _fb = _hw_fb;
+        _dirty = true;
+    }
 }
 
 static void blSet(bool on) {
@@ -534,6 +558,8 @@ static lv_indev_t *g_indev = nullptr;
 static int s_touchX = 0;
 static int s_touchY = 0;
 static bool s_isTouched = false;
+static unsigned long s_lastTouchPacket = 0;
+static unsigned long s_lastPollTime = 0;
 
 static void gt911_lvgl_indev_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
     (void)indev;
@@ -582,78 +608,77 @@ void displayTouchInit() {
 }
 
 bool displayTouchRead(int &x, int &y) {
-    x = s_touchX;
-    y = s_touchY;
     if (!gt911Addr) return false;
 
-    // Read Touch Status register (0x814E)
-    Wire.beginTransmission(gt911Addr);
-    Wire.write((uint8_t)(GT911_REG_STATUS >> 8));
-    Wire.write((uint8_t)(GT911_REG_STATUS & 0xFF));
-    if (Wire.endTransmission(false) != 0 || Wire.requestFrom(gt911Addr, (uint8_t)1) != 1) {
-        return s_isTouched;
-    }
+    unsigned long now = millis();
 
-    uint8_t status = Wire.read();
-    // Bit 7: Buffer status (1 = new touch data ready, 0 = reading / not ready)
-    if (!(status & 0x80)) {
-        return s_isTouched;
-    }
+    // Rate-limit I2C polling to every 10ms (100 Hz matches GT911 scan rate)
+    if (now - s_lastPollTime >= 10) {
+        s_lastPollTime = now;
 
-    uint8_t count = status & 0x0F;
-    if (count == 0 || count > 5) {
-        // Finger lifted or invalid count: clear buffer-ready flag and update state
+        // Read Touch Status register (0x814E)
         Wire.beginTransmission(gt911Addr);
         Wire.write((uint8_t)(GT911_REG_STATUS >> 8));
         Wire.write((uint8_t)(GT911_REG_STATUS & 0xFF));
-        Wire.write((uint8_t)0);
-        Wire.endTransmission();
+        if (Wire.endTransmission(false) == 0 && Wire.requestFrom(gt911Addr, (uint8_t)1) == 1) {
+            uint8_t status = Wire.read();
+            if (status & 0x80) {
+                // Buffer status = 1 (new touch data ready)
+                uint8_t count = status & 0x0F;
+                if (count >= 1 && count <= 5) {
+                    // Point 1 track data: starts at 0x814F (Track ID), followed by
+                    // 0x8150 (xL), 0x8151 (xH), 0x8152 (yL), 0x8153 (yH), 0x8154 (size)
+                    Wire.beginTransmission(gt911Addr);
+                    Wire.write((uint8_t)(GT911_REG_TRACK1 >> 8));
+                    Wire.write((uint8_t)(GT911_REG_TRACK1 & 0xFF));
+                    if (Wire.endTransmission(false) == 0 && Wire.requestFrom(gt911Addr, (uint8_t)6) == 6) {
+                        uint8_t pt[6];
+                        for (int i = 0; i < 6; i++) pt[i] = Wire.read();
 
-        s_isTouched = false;
-        return false;
+                        int rawX = pt[1] | (pt[2] << 8);
+                        int rawY = pt[3] | (pt[4] << 8);
+                        if (rawX > 799) rawX = 799;
+                        if (rawY > 479) rawY = 479;
+                        if (rawX < 0) rawX = 0;
+                        if (rawY < 0) rawY = 0;
+
+                        int fx = rawX, fy = rawY;
+                        if (canvas.flip()) {
+                            fx = 799 - rawX;
+                            fy = 479 - rawY;
+                        } else {
+                            fx = rawX;
+                            fy = rawY;
+                        }
+
+                        s_touchX = fx;
+                        s_touchY = fy;
+                        s_isTouched = true;
+                        s_lastTouchPacket = now;
+                    }
+                } else {
+                    // count == 0: finger lifted!
+                    s_isTouched = false;
+                }
+
+                // Clear buffer-ready flag so controller updates again
+                Wire.beginTransmission(gt911Addr);
+                Wire.write((uint8_t)(GT911_REG_STATUS >> 8));
+                Wire.write((uint8_t)(GT911_REG_STATUS & 0xFF));
+                Wire.write((uint8_t)0);
+                Wire.endTransmission();
+            } else {
+                // Bit 7 is 0 (no new data ready). If no packet arrived for >= 30ms, finger was lifted.
+                if (s_isTouched && (now - s_lastTouchPacket >= 30)) {
+                    s_isTouched = false;
+                }
+            }
+        }
     }
 
-    // Point 1 track data: starts at 0x814F (Track ID), followed by
-    // 0x8150 (xL), 0x8151 (xH), 0x8152 (yL), 0x8153 (yH), 0x8154 (size)
-    Wire.beginTransmission(gt911Addr);
-    Wire.write((uint8_t)(GT911_REG_TRACK1 >> 8));
-    Wire.write((uint8_t)(GT911_REG_TRACK1 & 0xFF));
-    bool ok = (Wire.endTransmission(false) == 0 && Wire.requestFrom(gt911Addr, (uint8_t)6) == 6);
-    uint8_t pt[6] = {0};
-    if (ok) {
-        for (int i = 0; i < 6; i++) pt[i] = Wire.read();
-    }
-
-    // Clear buffer-ready flag so controller updates again
-    Wire.beginTransmission(gt911Addr);
-    Wire.write((uint8_t)(GT911_REG_STATUS >> 8));
-    Wire.write((uint8_t)(GT911_REG_STATUS & 0xFF));
-    Wire.write((uint8_t)0);
-    Wire.endTransmission();
-
-    if (!ok) {
-        return s_isTouched;
-    }
-
-    int rawX = pt[1] | (pt[2] << 8);
-    int rawY = pt[3] | (pt[4] << 8);
-    if (rawX > 799) rawX = 799;
-    if (rawY > 479) rawY = 479;
-    if (rawX < 0) rawX = 0;
-    if (rawY < 0) rawY = 0;
-
-    int fx = rawX, fy = rawY;
-    if (canvas.flip()) {
-        fx = 799 - rawX;
-        fy = 479 - rawY;
-    }
-
-    s_touchX = fx;
-    s_touchY = fy;
-    s_isTouched = true;
     x = s_touchX;
     y = s_touchY;
-    return true;
+    return s_isTouched;
 }
 
 uint8_t displayTouchGetAddr() {

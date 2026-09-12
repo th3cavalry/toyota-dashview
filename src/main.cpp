@@ -2400,11 +2400,9 @@ void updateDisplay() {
                          profChanged;
 
     if (screenChanged) {
-        bool isModal = isPidConfigOpen || isRawSnifferModalOpen;
-        bool modalJustClosed = (!isModal && (s_lastPidConfig || s_lastSnifferModal));
-        bool isFirst = (s_lastScreen == (DisplayScreen)-1);
-        bool orientationChanged = (isDisplayFlipped != s_lastFlipped);
+        canvas.beginOffscreen();
 
+        bool isModal = isPidConfigOpen || isRawSnifferModalOpen;
         s_lastScreen = currentScreen;
         s_lastEditMode = g_cdEditMode;
         s_lastEditorKind = (int)g_cdEditorKind;
@@ -2417,9 +2415,8 @@ void updateDisplay() {
         if (isModal) {
             canvas.fillScreen(C_DARK_BG);
         } else {
-            // Ultra-fast 32-bit burst clear of content area (0..440) — leaves navbar intact!
             canvas.fillContentArea(C_DARK_BG);
-            drawBottomNavBar(isFirst || modalJustClosed || orientationChanged);
+            drawBottomNavBar(true);
         }
     }
 
@@ -2434,17 +2431,21 @@ void updateDisplay() {
         default:               renderDashboard(screenChanged);     break;
     }
 
-    // No push needed: the panel GDMA scans out the framebuffer we just drew.
+    if (screenChanged) {
+        canvas.endOffscreen();
+    }
 }
 
 // =========================================================================
 // Official TRD Red Boot Splash (LVGL 9 PNG Decoded via lodepng)
 // =========================================================================
 void showToyotaBootSplash() {
+    canvas.beginOffscreen();
     if (!drawToyotaBootSplash(canvas)) {
         Serial.println("[SPLASH] Splash render failed — clearing to black.");
         canvas.fillScreen(0);
     }
+    canvas.endOffscreen();
     isBootSplashActive = true;
 }
 
