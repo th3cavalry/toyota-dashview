@@ -74,10 +74,23 @@ struct FakeBus {
     int stopCalls = 0;
     bool restartPending = false;
     twai_message_t lastTx = {};
+    // Install/config recording so tests can assert canBusInit wired the
+    // right pins/mode/alerts, and failure flags for negative paths.
+    int installCalls = 0;
+    int reconfigureCalls = 0;
+    uint32_t reconfigureAlerts = 0;
+    uint8_t installTxPin = 0, installRxPin = 0, installMode = 0;
+    bool installShouldFail = false;
+    bool statusInfoShouldFail = false;
 };
 inline FakeBus g_fakeBus;
 
-inline esp_err_t twai_driver_install(const twai_general_config_t*, const twai_timing_config_t*, const twai_filter_config_t*) {
+inline esp_err_t twai_driver_install(const twai_general_config_t* g, const twai_timing_config_t*, const twai_filter_config_t*) {
+    if (g_fakeBus.installShouldFail) return ESP_FAIL;
+    g_fakeBus.installCalls++;
+    g_fakeBus.installTxPin = g->tx_io;
+    g_fakeBus.installRxPin = g->rx_io;
+    g_fakeBus.installMode = g->mode;
     return ESP_OK;
 }
 inline esp_err_t twai_start() {
@@ -93,8 +106,13 @@ inline esp_err_t twai_stop() {
     g_fakeBus.restartPending = true;
     return ESP_OK;
 }
-inline esp_err_t twai_reconfigure_alerts(uint32_t, uint32_t*) { return ESP_OK; }
+inline esp_err_t twai_reconfigure_alerts(uint32_t alerts, uint32_t*) {
+    g_fakeBus.reconfigureCalls++;
+    g_fakeBus.reconfigureAlerts = alerts;
+    return ESP_OK;
+}
 inline esp_err_t twai_get_status_info(twai_status_info_t* st) {
+    if (g_fakeBus.statusInfoShouldFail) return ESP_FAIL;
     st->state = g_fakeBus.state;
     st->tx_error_counter = g_fakeBus.tec;
     st->rx_error_counter = g_fakeBus.rec;

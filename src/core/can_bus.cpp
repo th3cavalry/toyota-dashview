@@ -49,6 +49,13 @@ void canBusNoteTxError(const char* reason) {
     }
 }
 
+#ifdef UNIT_TEST
+void canBusResetFailsafeForTest() {
+    txInhibitUntilMs = 0;
+    txInhibitLogged = false;
+}
+#endif
+
 // Polls may only go out when: profile allows TX (not listen-only), the bus
 // has been quiet of TX errors for the cooldown window, and the controller is
 // error-active with near-zero TX error count.
