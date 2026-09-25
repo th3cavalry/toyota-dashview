@@ -15,9 +15,14 @@ over Wi-Fi. Target vehicle today: 2016-2023 Tacoma (2GR-FKS / AC60).
 
 ## Architecture (how the pieces fit)
 
-- `src/main.cpp` — monolith (~2.4k lines): TWAI CAN driver, ISO-TP reassembly,
-  OBD poller, LVGL-free LovyanGFX UI (6 screens via `currentScreen`, software-
-  rotated RGB framebuffer in PSRAM), datalogging, Wi-Fi SavvyCAN bridge, touch.
+- `src/main.cpp` — monolith (~2.4k lines, splitting in progress per #17):
+  ISO-TP reassembly, OBD poller, LVGL-free LovyanGFX UI (6 screens via
+  `currentScreen`, software-rotated RGB framebuffer in PSRAM), datalogging,
+  Wi-Fi SavvyCAN bridge, touch.
+- `src/core/can_bus.h/.cpp` — TWAI init + TX failsafe (bus-off recovery,
+  error-passive cooldown, listen-only kill-switch). Native-tested
+  (`tests/native/test_can_bus.cpp`) via the TWAI shim. API: `canBusInit`,
+  `canBusTxCleared`, `canBusTryRecovery`, `canBusNoteTxError`.
 - `src/profile.h/.cpp` — **vehicle profile engine** (done). Parses a JSON profile
   into a signal table; `onBroadcastFrame()` decodes CAN broadcasts (Motorola/
   Intel bitfields, enums), `onObdPollResponse()` decodes polled PIDs (a*(A|B)+c,

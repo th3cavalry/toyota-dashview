@@ -12,4 +12,10 @@ g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
   -I tests/native/shim -I src -I "$ARDUINOJSON" \
   tests/native/test_profile.cpp src/profile.cpp \
   -o tests/native/build/test_profile
-exec tests/native/build/test_profile
+# Test the CAN bus module (TX failsafe state machine)
+g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
+  -I tests/native/shim -I src -I "$ARDUINOJSON" \
+  tests/native/test_can_bus.cpp src/core/can_bus.cpp src/profile.cpp \
+  -o tests/native/build/test_can_bus
+tests/native/build/test_profile
+tests/native/build/test_can_bus
