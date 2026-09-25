@@ -571,6 +571,9 @@ uint8_t  isotpNextSeq = 1;   // expected CF sequence nibble (wraps after 0)
 unsigned long isotpStartedAt = 0;
 
 void sendIsotpFlowControl() {
+    // Listen-only profiles never touch the bus — not even ISO-TP flow
+    // control. Multi-frame responses we did not ask for are simply dropped.
+    if (isListenOnly()) return;
     twai_message_t fc = {};
     fc.identifier = getReqId();
     fc.extd = 0;

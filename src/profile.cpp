@@ -278,9 +278,10 @@ bool loadProfile(const char* json) {
         s_listenOnly = bus["listen_only"] | true;
         
         // Security: Validate req_id and func_id against OBD scope
-        // Legal TX request ids: req_id in range 0x7E0..0x7E7 inclusive; func_id == 0x7DF
-        // These are the ISO 15765-3 OBD physical/functional request IDs.
-        if (s_reqId < 0x7E0 || s_reqId > 0x7E7 || s_funcId != 0x7DF) {
+        // Legal TX request ids: req_id in 0x7E0..0x7E7 (ISO 15765-3 physical)
+        // or 0x7DF (functional broadcast — used by the j1979_base profile);
+        // func_id must be exactly 0x7DF.
+        if (!(s_reqId == 0x7DF || (s_reqId >= 0x7E0 && s_reqId <= 0x7E7)) || s_funcId != 0x7DF) {
             s_reqIdViolation = true;
             s_listenOnly = true; // Kill-switch: no TX regardless of profile listen_only value
             // Do NOT rewrite the ids, do NOT fail the load - receive/decode still works.

@@ -142,6 +142,12 @@ static void test_req_id_scope_guard() {
           "test3 profile loads");
     CHECK(reqIdScopeViolation(), "reqIdScopeViolation() should be true");
     CHECK(isListenOnly(), "isListenOnly() should be true");
+
+    // Test 3b: functional req_id 0x7DF is LEGAL (j1979_base uses it) — must NOT trip the guard
+    CHECK(loadProfile(R"({"id":"test3b","bus":{"req_id":"0x7DF","func_id":"0x7DF","listen_only":false},"signals":[{"key":"x","kind":"obd_poll","mode":"0x01","pid":"0x0D"}]})"),
+          "test3b profile loads");
+    CHECK(!reqIdScopeViolation(), "0x7DF req_id must not be a violation");
+    CHECK(!isListenOnly(), "0x7DF req_id keeps listen_only as written");
     
     // Test 4: after loading a CLEAN profile again, reqIdScopeViolation() returns false (no sticky violation across loads)
     loadDefaultProfile();
