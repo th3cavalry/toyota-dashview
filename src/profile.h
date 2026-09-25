@@ -67,3 +67,7 @@ const char* getProfileId();
 const char* getProfileName();
 const char* getProfileLogo();
 const char* getProfileBrandColor();
+
+// Security: returns true when the most recently loaded profile specified req_id or func_id outside the legal OBD range
+// and polling was therefore disabled. See milestone issue #17 Phase 0.
+bool reqIdScopeViolation();
