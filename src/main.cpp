@@ -571,6 +571,9 @@ uint8_t  isotpNextSeq = 1;   // expected CF sequence nibble (wraps after 0)
 unsigned long isotpStartedAt = 0;
 
 void sendIsotpFlowControl() {
+    // Listen-only profiles never touch the bus — not even ISO-TP flow
+    // control. Multi-frame responses we did not ask for are simply dropped.
+    if (isListenOnly()) return;
     twai_message_t fc = {};
     fc.identifier = getReqId();
     fc.extd = 0;
@@ -1178,7 +1181,17 @@ void drawHeaderBar(const char* title) {
     snprintf(buf, sizeof(buf), "%.0f msg/s", currentPPS);
     canvas.setTextColor(C_TEXT_CYAN, canvas.color565(14, 16, 22));
     canvas.setFont(&fonts::Font2);
-    canvas.drawRightString(buf, 668, 14);
+    canvas.drawRightString(buf, 560, 14);
+
+    // Profile security state: a profile with out-of-scope req_id/func_id has
+    // OBD polling force-disabled (see reqIdScopeViolation, milestone #17 P0).
+    if (reqIdScopeViolation()) {
+        bool blink = ((millis() / 700) % 2 == 0);
+        canvas.fillRoundRect(572, 8, 100, 28, 4, blink ? C_TRD_RED : canvas.color565(80, 10, 15));
+        canvas.setTextColor(C_TEXT_WHITE);
+        canvas.setFont(&fonts::Font2);
+        canvas.drawCenterString("TX BLOCKED", 622, 14);
+    }
 
     // SD / REC Status Pill
     if (currentLogMode != LOG_IDLE) {
@@ -2499,8 +2512,11 @@ void setup() {
             } else {
                 Serial.printf("[PROFILE] NVS profile '%s' not found on SD (%s) - using built-in default.\n", profId.c_str(), profPath);
             }
-            if (sdProfileLoaded)
+            if (sdProfileLoaded) {
                 Serial.printf("[PROFILE] SD profile loaded: %s (%s)\n", getProfileName(), getProfileId());
+                if (reqIdScopeViolation())
+                    Serial.println("[PROFILE] SECURITY: profile req_id/func_id outside OBD range (0x7E0-0x7E7 / 0x7DF) - OBD polling DISABLED.");
+            }
         }
     }
 

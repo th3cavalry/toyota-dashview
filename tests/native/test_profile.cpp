@@ -123,6 +123,37 @@ static void test_bad_json() {
     loadDefaultProfile();
 }
 
+static void test_req_id_scope_guard() {
+    printf("== req_id scope guard\n");
+    // Test 1: profile with bus req_id "0x7E0" func_id "0x7DF", listen_only false -> reqIdScopeViolation()==false, isListenOnly()==false
+    CHECK(loadProfile(R"({"id":"test1","bus":{"req_id":"0x7E0","func_id":"0x7DF","listen_only":false},"signals":[{"key":"x","kind":"obd_poll","mode":"0x01","pid":"0x0D"}]})"),
+          "test1 profile loads");
+    CHECK(!reqIdScopeViolation(), "reqIdScopeViolation() should be false");
+    CHECK(!isListenOnly(), "isListenOnly() should be false");
+    
+    // Test 2: profile with req_id "0x7C0" -> reqIdScopeViolation()==true, isListenOnly()==true
+    CHECK(loadProfile(R"({"id":"test2","bus":{"req_id":"0x7C0","func_id":"0x7DF","listen_only":false},"signals":[{"key":"x","kind":"obd_poll","mode":"0x01","pid":"0x0D"}]})"),
+          "test2 profile loads");
+    CHECK(reqIdScopeViolation(), "reqIdScopeViolation() should be true");
+    CHECK(isListenOnly(), "isListenOnly() should be true");
+    
+    // Test 3: profile with func_id "0x18DA00F1" -> reqIdScopeViolation()==true, isListenOnly()==true
+    CHECK(loadProfile(R"({"id":"test3","bus":{"req_id":"0x7E0","func_id":"0x18DA00F1","listen_only":false},"signals":[{"key":"x","kind":"obd_poll","mode":"0x01","pid":"0x0D"}]})"),
+          "test3 profile loads");
+    CHECK(reqIdScopeViolation(), "reqIdScopeViolation() should be true");
+    CHECK(isListenOnly(), "isListenOnly() should be true");
+
+    // Test 3b: functional req_id 0x7DF is LEGAL (j1979_base uses it) — must NOT trip the guard
+    CHECK(loadProfile(R"({"id":"test3b","bus":{"req_id":"0x7DF","func_id":"0x7DF","listen_only":false},"signals":[{"key":"x","kind":"obd_poll","mode":"0x01","pid":"0x0D"}]})"),
+          "test3b profile loads");
+    CHECK(!reqIdScopeViolation(), "0x7DF req_id must not be a violation");
+    CHECK(!isListenOnly(), "0x7DF req_id keeps listen_only as written");
+    
+    // Test 4: after loading a CLEAN profile again, reqIdScopeViolation() returns false (no sticky violation across loads)
+    loadDefaultProfile();
+    CHECK(!reqIdScopeViolation(), "reqIdScopeViolation() should be false after clean load");
+}
+
 int main() {
     test_load();
     test_broadcast_decode();
@@ -130,6 +161,7 @@ int main() {
     test_freshness();
     test_meta();
     test_bad_json();
+    test_req_id_scope_guard();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

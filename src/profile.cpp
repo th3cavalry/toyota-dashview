@@ -65,6 +65,7 @@ static uint32_t s_reqId = 0x7E0;
 static uint32_t s_respId = 0x7E8;
 static uint32_t s_funcId = 0x7DF;
 static bool s_listenOnly = true;
+static bool s_reqIdViolation = false;
 
 // Bitfield extractor supporting Motorola (MSB-first) and Intel (LSB-first)
 static uint64_t extractBitfield(const uint8_t* data, uint8_t len, uint16_t startBit, uint8_t bitLen, ProfileByteOrder order) {
@@ -229,6 +230,7 @@ static void resetProfileState() {
     s_respId = 0x7E8;
     s_funcId = 0x7DF;
     s_listenOnly = true;
+    s_reqIdViolation = false;
 }
 
 bool loadProfile(const char* json) {
@@ -274,6 +276,18 @@ bool loadProfile(const char* json) {
         s_respId = parseHexOrDec(bus["resp_id"], 0x7E8);
         s_funcId = parseHexOrDec(bus["func_id"], 0x7DF);
         s_listenOnly = bus["listen_only"] | true;
+        
+        // Security: Validate req_id and func_id against OBD scope
+        // Legal TX request ids: req_id in 0x7E0..0x7E7 (ISO 15765-3 physical)
+        // or 0x7DF (functional broadcast — used by the j1979_base profile);
+        // func_id must be exactly 0x7DF.
+        if (!(s_reqId == 0x7DF || (s_reqId >= 0x7E0 && s_reqId <= 0x7E7)) || s_funcId != 0x7DF) {
+            s_reqIdViolation = true;
+            s_listenOnly = true; // Kill-switch: no TX regardless of profile listen_only value
+            // Do NOT rewrite the ids, do NOT fail the load - receive/decode still works.
+            // Only polling is disabled. Callers surface the violation via
+            // reqIdScopeViolation() (profile.cpp has no Serial on purpose).
+        }
     }
 
     // Layer 2: Inherit baseline
@@ -583,6 +597,7 @@ uint32_t getReqId() { return s_reqId; }
 uint32_t getRespId() { return s_respId; }
 uint32_t getFuncId() { return s_funcId; }
 bool isListenOnly() { return s_listenOnly; }
+bool reqIdScopeViolation() { return s_reqIdViolation; }
 uint32_t getArbBitrate() { return s_arbBitrate; }
 bool isCanFd() { return s_isCanFd; }
 const char* getProfileId() { return s_profileId; }
