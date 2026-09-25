@@ -17,3 +17,17 @@ jobs:
         run: pip install platformio
       - name: Build firmware
         run: pio run -e waveshare-touch-43b
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ArduinoJson v7
+        run: |
+          mkdir -p /tmp/arduinojson
+          git clone --depth 1 --branch v7.4.3 https://github.com/bblanchon/ArduinoJson /tmp/arduinojson
+      - name: Run native profile-engine unit tests
+        run: |
+          mkdir -p .pio/libdeps/waveshare-touch-43b/ArduinoJson
+          ln -s /tmp/arduinojson/src .pio/libdeps/waveshare-touch-43b/ArduinoJson/src
+          bash tests/native/run.sh
