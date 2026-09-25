@@ -14,6 +14,7 @@
 #include "toyota_splash.h"
 #include "profile.h"
 #include "custom_dash.h"   // Custom Dash API (impl included later, post-palette)
+#include "core/can_bus.h"
 
 // Persistent Settings (Flash NVS)
 Preferences preferences;
@@ -439,82 +440,7 @@ void handleWiFiClients() {
     }
 }
 
-// =========================================================================
-// CAN Driver Initialization & Toyota OBD Queries
-// =========================================================================
-void initCAN() {
-    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
-    twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
-    twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
-    if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
-        Serial.printf("[CAN] TWAI driver installed on TX: IO%d, RX: IO%d (Normal 500k Mode).\n", CAN_TX_PIN, CAN_RX_PIN);
-    } else {
-        Serial.println("[CAN] Failed to install TWAI driver.");
-        return;
-    }
-
-    // Alert on RX FIFO overrun and bus-off so processCAN() can react instead of
-    // silently dropping frames (shorted tap -> bus-off was previously permanent).
-    uint32_t alerts = TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_BUS_OFF | TWAI_ALERT_ERR_PASS;
-    twai_reconfigure_alerts(alerts, nullptr);
-
-    if (twai_start() == ESP_OK) {
-        Serial.println("[CAN] TWAI started successfully.");
-    } else {
-        Serial.println("[CAN] Failed to start TWAI.");
-    }
-}
-
-// =========================================================================
-// TX failsafe: a moving vehicle's bus outranks our gauges. Any error
-// activity (error-passive alert or non-zero TX error counter) silences OBD
-// polling; it auto-resumes only after TXERROR_COOLDOWN_MS of clean bus.
-// =========================================================================
-static const unsigned long TXERROR_COOLDOWN_MS = 5000;
-static unsigned long txInhibitUntilMs = 0;
-static bool txInhibitLogged = false;
-
-static void noteTxError(const char* reason) {
-    txInhibitUntilMs = millis() + TXERROR_COOLDOWN_MS;
-    if (!txInhibitLogged) {
-        Serial.printf("[CAN-TX] SAFETY: OBD polling paused 5s (%s).\n", reason);
-        txInhibitLogged = true;
-    }
-}
-
-// Polls may only go out when: profile allows TX (not listen-only), the bus
-// has been quiet of TX errors for the cooldown window, and the controller is
-// error-active with near-zero TX error count.
-static bool obdTxCleared() {
-    if (isListenOnly()) return false;
-    if ((long)(millis() - txInhibitUntilMs) < 0) return false;
-    twai_status_info_t st;
-    if (twai_get_status_info(&st) == ESP_OK) {
-        if (st.state != TWAI_STATE_RUNNING || st.tx_error_counter > 8 || st.rx_error_counter > 8) {
-            noteTxError("TEC/REC elevated");
-            return false;
-        }
-    }
-    if (txInhibitLogged) {
-        Serial.println("[CAN-TX] Bus healthy -> OBD polling resumed.");
-        txInhibitLogged = false;
-    }
-    return true;
-}
-
-// Restart the TWAI peripheral after a bus-off (recovery requires stop/start).
-void tryCanRecovery() {
-    noteTxError("bus-off recovery");
-    Serial.println("[CAN] Bus-off detected -> attempting TWAI recovery...");
-    twai_stop();
-    vTaskDelay(pdMS_TO_TICKS(200));
-    if (twai_start() == ESP_OK) {
-        Serial.println("[CAN] TWAI restarted after bus-off.");
-    } else {
-        Serial.println("[CAN] TWAI restart failed (wiring/termination?).");
-    }
-}
 
 // Query only what the log needs (profile signals marked for logging, mapped
 // to their poll ids) plus anything the Custom Dash shows.
@@ -2363,9 +2289,9 @@ void processCAN() {
     // of silently losing frames when TCP/SD backpressure slows the drain.
     uint32_t alerts = 0;
     if (twai_read_alerts(&alerts, 0) == ESP_OK && alerts) {
-        if (alerts & TWAI_ALERT_BUS_OFF) tryCanRecovery();
+        if (alerts & TWAI_ALERT_BUS_OFF) canBusTryRecovery();
         if (alerts & TWAI_ALERT_ERR_PASS)
-            noteTxError("error-passive");
+            canBusNoteTxError("error-passive");
         if (alerts & TWAI_ALERT_RX_QUEUE_FULL) {
             rxOverflowCount++;
             Serial.println("[CAN] RX queue full - frames dropped!");
@@ -2485,7 +2411,7 @@ void setup() {
     initWiFiStreaming();
 
     // 7. CAN Bus & MicroSD
-    initCAN();
+    canBusInit();
     mountSD();
 
     // 7b. Vehicle profile override: /profiles/<id>.json on SD, id chosen in
@@ -2570,8 +2496,8 @@ void loop() {
     }
 
     // Periodic Toyota OBD-II active queries
-    // TX failsafe: obdTxCleared() pauses polling on any bus error activity.
-    if (millis() - lastCanActivityTime < 3000 && (millis() - lastObdQueryTime >= 250) && obdTxCleared()) {
+    // TX failsafe: canBusTxCleared() pauses polling on any bus error activity.
+    if (millis() - lastCanActivityTime < 3000 && (millis() - lastObdQueryTime >= 250) && canBusTxCleared()) {
         lastObdQueryTime = millis();
         sendToyotaObdQueries();
     }
